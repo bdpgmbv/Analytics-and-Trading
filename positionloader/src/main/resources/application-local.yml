@@ -1,0 +1,10 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/analyticsandtrading
+    username: postgres
+    password: password
+  kafka:
+    bootstrap-servers: localhost:9092
+upstream:
+  mspm:
+    base-url: http://localhost:8081/mspm

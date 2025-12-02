@@ -5,15 +5,11 @@ package com.vyshali.positionloader.dto;
  * @author Vyshali Prabananth Lal
  */
 
-import lombok.Data;
+import jakarta.validation.constraints.NotNull;
 
 import java.math.BigDecimal;
 
-@Data
-public class PositionDetailDTO {
-    private Integer productId;
-    private String ticker;
-    private String assetClass;
-    private String issueCurrency;
-    private BigDecimal quantity;
+public record PositionDetailDTO(@NotNull Integer productId, String ticker, String assetClass, String issueCurrency,
+                                @NotNull BigDecimal quantity, String txnType // BUY, SELL
+) {
 }

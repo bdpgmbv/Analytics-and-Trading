@@ -5,6 +5,9 @@ package com.vyshali.positionloader.listener;
  * @author Vyshali Prabananth Lal
  */
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vyshali.positionloader.config.TopicConstants; // Import Constants
+import com.vyshali.positionloader.dto.AccountSnapshotDTO;
 import com.vyshali.positionloader.service.SnapshotService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,25 +23,24 @@ import java.util.List;
 @RequiredArgsConstructor
 public class MarketDataListener {
     private final SnapshotService snapshotService;
+    private final ObjectMapper objectMapper;
 
-    @KafkaListener(topics = "MSPM_EOD_TRIGGER", groupId = "eod-group", containerFactory = "singleFactory")
+    @KafkaListener(topics = TopicConstants.TOPIC_EOD_TRIGGER, groupId = TopicConstants.GROUP_EOD, containerFactory = "eodFactory")
     public void onEodTrigger(ConsumerRecord<String, String> record, Acknowledgment ack) {
-        try {
-            snapshotService.processEodFromMspm(Integer.parseInt(record.value()));
-            ack.acknowledge();
-        } catch (Exception e) {
-            log.error("EOD Failed: {}", record.value(), e);
-            throw e;
-        }
+        snapshotService.processEodFromMspm(Integer.parseInt(record.value()));
+        ack.acknowledge();
     }
 
-    @KafkaListener(topics = "MSPA_INTRADAY", groupId = "intra-group", containerFactory = "batchFactory")
+    @KafkaListener(topics = TopicConstants.TOPIC_INTRADAY, groupId = TopicConstants.GROUP_INTRADAY, containerFactory = "intradayFactory")
     public void onIntradayBatch(List<ConsumerRecord<String, String>> records, Acknowledgment ack) {
         for (var record : records) {
             try {
-                snapshotService.processIntradayFromMspa(Integer.parseInt(record.value()));
+                // Records work natively with Jackson in Spring Boot 3.2+
+                AccountSnapshotDTO dto = objectMapper.readValue(record.value(), AccountSnapshotDTO.class);
+                snapshotService.processIntradayPayload(dto);
             } catch (Exception e) {
-                log.error("Intraday Failed: {}", record.value(), e);
+                log.error("Batch Failure offset {}: {}", record.offset(), e.getMessage());
+                throw new RuntimeException("Batch Failed", e);
             }
         }
         ack.acknowledge();

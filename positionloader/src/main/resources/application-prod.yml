@@ -1,0 +1,22 @@
+spring:
+  config:
+    import: "vault://"
+  cloud:
+    vault:
+      authentication: KUBERNETES
+      application-name: positionloader
+      kv: { enabled: true }
+
+  datasource:
+    url: jdbc:postgresql://prod-db-endpoint:5432/analyticsandtrading
+    # User/Pass injected by Vault
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: https://auth.internal.ms.com/realms/trading
+
+upstream:
+  mspm:
+    base-url: https://api.internal.ms.com/mspm

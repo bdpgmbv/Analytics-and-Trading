@@ -1,0 +1,7 @@
+databaseChangeLog:
+  - include:
+      file: db/changelog/changes/001-initial-schema.sql
+  - include:
+      file: db/changelog/changes/002-add-eod-tracking.sql
+  - include:
+      file: db/changelog/changes/003-add-shedlock.sql
