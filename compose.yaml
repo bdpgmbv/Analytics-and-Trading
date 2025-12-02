@@ -1,7 +1,9 @@
 version: '3.8'
 services:
+  # --- DATABASES & BROKERS ---
   postgres:
     image: postgres:15-alpine
+    container_name: trading-db
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
@@ -11,29 +13,50 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.6.0
+    container_name: trading-kafka
+    ports: ["9092:9092"]
     environment:
       KAFKA_NODE_ID: 1
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_PROCESS_ROLES: 'broker,controller'
       KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
-      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
       KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
-    ports: ["9092:9092"]
 
+  # --- POSITION LOADER (Consumer) ---
   positionloader:
     build:
       context: ./positionloader
+    container_name: positionloader
+    ports: ["8080:8080"]
     environment:
       SPRING_PROFILES_ACTIVE: local
       DB_USER: postgres
       DB_PASS: password
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-    ports: ["8080:8080"]
-    depends_on: [postgres, kafka]
+      UPSTREAM_MSPM_BASE_URL: http://mock-upstream:8081/mspm
+      # CRITICAL: 2GB Heap to handle parsing large JSON payloads
+      JAVA_TOOL_OPTIONS: "-Xmx2g"
+    depends_on: [postgres, kafka, mock-upstream]
+
+  # --- MOCK UPSTREAM (Producer) ---
+  mock-upstream:
+    build:
+      context: ./mock-upstream
+    container_name: mock-upstream
+    ports: ["8081:8081"]
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      # CRITICAL: 2GB Heap to generate massive object lists in memory
+      JAVA_TOOL_OPTIONS: "-Xmx2g"
+    depends_on: [kafka]
 
 volumes:
   pgdata:

@@ -4,3 +4,5 @@ include 'common'
 include 'positionloader'
 include 'priceservice'
 include 'tradefillprocessor'
+include 'mock-upstream'
+

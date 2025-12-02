@@ -1,12 +1,19 @@
 server:
   port: 8080
   shutdown: graceful
+  tomcat:
+    threads:
+      max: 200 # Standard Tomcat threads for handling HTTP requests
+      min-spare: 20
 
 spring:
   application:
     name: positionloader
+
+  # CRITICAL: Enable Java 21 Virtual Threads (Project Loom)
   threads:
-    virtual: { enabled: true }
+    virtual:
+      enabled: true
 
   datasource:
     url: jdbc:postgresql://localhost:5432/analyticsandtrading
@@ -14,26 +21,53 @@ spring:
     password: ${DB_PASS:password}
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: 20
+      # PERFORMANCE TUNING FOR VIRTUAL THREADS
+      # Virtual threads are cheap/fast; DB connections are expensive/slow.
+      # We need a larger pool to prevent thread starvation.
+      maximum-pool-size: 50
+      minimum-idle: 10
+      connection-timeout: 5000 # Fail fast (5s) if DB is overwhelmed
+      idle-timeout: 600000
+      max-lifetime: 1800000
 
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.yaml
     enabled: true
 
+  cache:
+    type: caffeine
+    caffeine:
+      # High-performance in-memory cache for Reference Data
+      spec: maximumSize=10000,expireAfterWrite=24h
+
   kafka:
     bootstrap-servers: localhost:9092
     consumer:
       group-id: positionloader-group
-      enable-auto-commit: false
+      auto-offset-reset: earliest
+      enable-auto-commit: false # We commit manually in Listener
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     listener:
       ack-mode: MANUAL_IMMEDIATE
 
+# Upstream Configuration
 upstream:
   mspm:
-    base-url: https://api.internal.ms.com/mspm
+    # Points to the Docker container name defined in compose.yaml
+    base-url: ${UPSTREAM_MSPM_BASE_URL:http://localhost:8081/mspm} # Pull-based EOD source
 
+# Observability & Health Probes (K8s Standard)
 management:
-  endpoints: { web: { exposure: { include: "health,metrics,prometheus" } } }
-  endpoint: { health: { probes: { enabled: true } } }
+  endpoints:
+    web:
+      exposure:
+        include: health, metrics, prometheus, info
+  endpoint:
+    health:
+      probes:
+        enabled: true # Exposes /actuator/health/liveness & /readiness
+      show-details: always
+  tracing:
+    sampling:
+      probability: 1.0 # Sample 100% of traces (adjust for high volume)
