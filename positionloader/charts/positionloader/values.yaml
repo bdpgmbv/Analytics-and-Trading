@@ -1,0 +1,13 @@
+replicaCount: 2
+image:
+  repository: my-registry/positionloader
+  tag: "1.0.0"
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "500m"
+  limits:
+    memory: "1Gi"
+    cpu: "1000m"
+env:
+  SPRING_PROFILES_ACTIVE: "prod"

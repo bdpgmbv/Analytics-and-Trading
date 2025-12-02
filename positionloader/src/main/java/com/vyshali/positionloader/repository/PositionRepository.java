@@ -20,42 +20,51 @@ import java.util.List;
 public class PositionRepository {
     private final JdbcTemplate jdbcTemplate;
 
-    // EOD: Wipe
-    public int deletePositionsByAccount(Integer accountId) {
-        return jdbcTemplate.update("DELETE FROM Positions WHERE account_id = ?", accountId);
+    public void deletePositionsByAccount(Integer accountId) {
+        jdbcTemplate.update("DELETE FROM Positions WHERE account_id = ?", accountId);
     }
 
-    // EOD: Insert (Clean)
     public void batchInsertPositions(Integer accountId, List<PositionDetailDTO> positions, String source) {
         String sql = """
                     INSERT INTO Positions (position_id, account_id, product_id, quantity, source_system, position_type)
                     VALUES (nextval('position_seq'), ?, ?, ?, ?, 'PHYSICAL')
                 """;
-        executeBatch(sql, accountId, positions, source);
+        executeBatch(sql, accountId, positions, source, false);
     }
 
-    // INTRADAY: Upsert (Requires Unique Index on Account+Product)
-    public void batchUpsertPositions(Integer accountId, List<PositionDetailDTO> positions, String source) {
+    public void batchIncrementalUpsert(Integer accountId, List<PositionDetailDTO> positions, String source) {
+        // ... (SQL remains same as previous step) ...
         String sql = """
                     INSERT INTO Positions (account_id, product_id, quantity, source_system, position_type)
-                    VALUES (?, ?, ?, ?, 'PHYSICAL')
+                    VALUES (?, ?, ?, ?, 'PHYSICAL') 
                     ON CONFLICT (account_id, product_id) 
                     DO UPDATE SET 
-                        quantity = EXCLUDED.quantity, 
+                        quantity = Positions.quantity + EXCLUDED.quantity, 
                         source_system = EXCLUDED.source_system,
                         updated_at = CURRENT_TIMESTAMP
                 """;
-        executeBatch(sql, accountId, positions, source);
+        executeBatch(sql, accountId, positions, source, true);
     }
 
-    private void executeBatch(String sql, Integer accountId, List<PositionDetailDTO> positions, String source) {
+    private void executeBatch(String sql, Integer accountId, List<PositionDetailDTO> positions, String source, boolean applySignLogic) {
         jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
             @Override
             public void setValues(PreparedStatement ps, int i) throws SQLException {
                 PositionDetailDTO p = positions.get(i);
+
                 ps.setInt(1, accountId);
-                ps.setInt(2, p.getProductId());
-                ps.setBigDecimal(3, p.getQuantity());
+                // FIX: .getProductId() -> .productId()
+                ps.setInt(2, p.productId());
+
+                // FIX: .getQuantity() -> .quantity()
+                java.math.BigDecimal finalQty = p.quantity();
+
+                // FIX: .getTxnType() -> .txnType()
+                if (applySignLogic && isNegativeTransaction(p.txnType())) {
+                    finalQty = finalQty.negate();
+                }
+
+                ps.setBigDecimal(3, finalQty);
                 ps.setString(4, source);
             }
 
@@ -64,5 +73,9 @@ public class PositionRepository {
                 return positions.size();
             }
         });
+    }
+
+    private boolean isNegativeTransaction(String type) {
+        return type != null && (type.equalsIgnoreCase("SELL") || type.equalsIgnoreCase("SHORT_SELL") || type.equalsIgnoreCase("DELIVER"));
     }
 }

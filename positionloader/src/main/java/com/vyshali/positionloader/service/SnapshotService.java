@@ -6,8 +6,7 @@ package com.vyshali.positionloader.service;
  */
 
 import com.vyshali.positionloader.dto.AccountSnapshotDTO;
-import com.vyshali.positionloader.repository.PositionRepository;
-import com.vyshali.positionloader.repository.ReferenceDataRepository;
+import com.vyshali.positionloader.repository.*;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
@@ -15,29 +14,42 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class SnapshotService {
-
     private final MspmIntegrationService mspmService;
-    private final MspaIntegrationService mspaService;
     private final ReferenceDataRepository refRepo;
     private final PositionRepository posRepo;
+    private final EodTrackerRepository trackerRepo;
+    private final EventPublisherService eventPublisher;
     private final MeterRegistry meterRegistry;
 
     @Transactional(rollbackFor = Exception.class)
     public void processEodFromMspm(Integer accountId) {
         Timer.Sample sample = Timer.start(meterRegistry);
-        log.info("EOD: Start for Account: {}", accountId);
         try {
             AccountSnapshotDTO snapshot = mspmService.fetchEodSnapshot(accountId);
             upsertReferenceData(snapshot);
 
             posRepo.deletePositionsByAccount(accountId);
 
-            if (snapshot.getPositions() != null && !snapshot.getPositions().isEmpty()) {
-                posRepo.batchInsertPositions(accountId, snapshot.getPositions(), "MSPM_EOD");
+            // FIX: .getPositions() -> .positions()
+            if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
+                posRepo.batchInsertPositions(accountId, snapshot.positions(), "MSPM_EOD");
+            }
+
+            LocalDate today = LocalDate.now();
+            // FIX: .getClientId() -> .clientId()
+            trackerRepo.markAccountComplete(accountId, snapshot.clientId(), today);
+
+            int count = (snapshot.positions() == null) ? 0 : snapshot.positions().size();
+            eventPublisher.publishChangeEvent(accountId, snapshot.clientId(), count, "EOD_COMPLETE");
+
+            if (trackerRepo.isClientFullyComplete(snapshot.clientId(), today)) {
+                eventPublisher.publishReportingSignOff(snapshot.clientId(), today);
             }
         } finally {
             sample.stop(meterRegistry.timer("posloader.eod.duration"));
@@ -45,27 +57,31 @@ public class SnapshotService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public void processIntradayFromMspa(Integer accountId) {
+    public void processIntradayPayload(AccountSnapshotDTO snapshot) {
         Timer.Sample sample = Timer.start(meterRegistry);
-        log.info("INTRADAY: Start for Account: {}", accountId);
         try {
-            AccountSnapshotDTO snapshot = mspaService.fetchIntradayPositions(accountId);
             upsertReferenceData(snapshot);
-
-            if (snapshot.getPositions() != null && !snapshot.getPositions().isEmpty()) {
-                posRepo.batchUpsertPositions(accountId, snapshot.getPositions(), "MSPA_INTRA");
+            // FIX: .getPositions() -> .positions()
+            if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
+                // FIX: .getAccountId() -> .accountId()
+                posRepo.batchIncrementalUpsert(snapshot.accountId(), snapshot.positions(), "MSPA_INTRA");
             }
+
+            int count = (snapshot.positions() == null) ? 0 : snapshot.positions().size();
+            eventPublisher.publishChangeEvent(snapshot.accountId(), snapshot.clientId(), count, "INTRADAY_UPDATE");
         } finally {
             sample.stop(meterRegistry.timer("posloader.intra.duration"));
         }
     }
 
     private void upsertReferenceData(AccountSnapshotDTO snapshot) {
-        refRepo.ensureClientExists(snapshot.getClientId(), snapshot.getClientName());
-        refRepo.ensureFundExists(snapshot.getFundId(), snapshot.getClientId(), snapshot.getFundName(), snapshot.getBaseCurrency());
-        refRepo.upsertAccount(snapshot.getAccountId(), snapshot.getFundId(), snapshot.getAccountNumber(), snapshot.getAccountType());
-        if (snapshot.getPositions() != null && !snapshot.getPositions().isEmpty()) {
-            refRepo.batchUpsertProducts(snapshot.getPositions());
+        // FIX: All getters updated to record style
+        refRepo.ensureClientExists(snapshot.clientId(), snapshot.clientName());
+        refRepo.ensureFundExists(snapshot.fundId(), snapshot.clientId(), snapshot.fundName(), snapshot.baseCurrency());
+        refRepo.upsertAccount(snapshot.accountId(), snapshot.fundId(), snapshot.accountNumber(), snapshot.accountType());
+
+        if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
+            refRepo.batchUpsertProducts(snapshot.positions());
         }
     }
 }

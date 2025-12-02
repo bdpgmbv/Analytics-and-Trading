@@ -5,19 +5,12 @@ package com.vyshali.positionloader.dto;
  * @author Vyshali Prabananth Lal
  */
 
-import lombok.Data;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.List;
 
-@Data
-public class AccountSnapshotDTO {
-    private Integer clientId;
-    private String clientName;
-    private Integer fundId;
-    private String fundName;
-    private String baseCurrency;
-    private Integer accountId;
-    private String accountNumber;
-    private String accountType;
-    private List<PositionDetailDTO> positions;
+public record AccountSnapshotDTO(@NotNull Integer clientId, String clientName, @NotNull Integer fundId, String fundName,
+                                 String baseCurrency, @NotNull Integer accountId, String accountNumber,
+                                 String accountType, @Valid List<PositionDetailDTO> positions) {
 }

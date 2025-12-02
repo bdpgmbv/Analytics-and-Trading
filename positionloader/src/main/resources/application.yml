@@ -6,10 +6,10 @@ spring:
   application:
     name: positionloader
   threads:
-    virtual: { enabled: true } # Java 21 Feature
-  
+    virtual: { enabled: true }
+
   datasource:
-    url: jdbc:postgresql://localhost:5432/positionloader_db
+    url: jdbc:postgresql://localhost:5432/analyticsandtrading
     username: ${DB_USER:postgres}
     password: ${DB_PASS:password}
     driver-class-name: org.postgresql.Driver
@@ -20,26 +20,20 @@ spring:
     change-log: classpath:db/changelog/db.changelog-master.yaml
     enabled: true
 
-  cache:
-    type: caffeine
-    caffeine:
-      spec: maximumSize=10000,expireAfterWrite=24h
-
   kafka:
     bootstrap-servers: localhost:9092
     consumer:
       group-id: positionloader-group
-      auto-offset-reset: earliest
       enable-auto-commit: false
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      properties:
-        spring.json.trusted.packages: "*"
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     listener:
       ack-mode: MANUAL_IMMEDIATE
 
 upstream:
   mspm:
-    base-url: https://api.internal.ms.com/mspm # EOD
-  mspa:
-    base-url: https://api.internal.ms.com/mspa # Intraday
+    base-url: https://api.internal.ms.com/mspm
+
+management:
+  endpoints: { web: { exposure: { include: "health,metrics,prometheus" } } }
+  endpoint: { health: { probes: { enabled: true } } }

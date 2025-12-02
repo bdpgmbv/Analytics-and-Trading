@@ -11,7 +11,6 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
-
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.List;
@@ -23,9 +22,9 @@ import java.util.function.Predicate;
 @Repository
 @RequiredArgsConstructor
 public class ReferenceDataRepository {
-
     private final JdbcTemplate jdbcTemplate;
 
+    // ... (Client/Fund/Account methods remain same) ...
     @Cacheable(value = "clients", key = "#id")
     public boolean ensureClientExists(Integer id, String name) {
         String sql = "INSERT INTO Clients (client_id, client_name) VALUES (?, ?) ON CONFLICT (client_id) DO UPDATE SET client_name = EXCLUDED.client_name";
@@ -46,25 +45,22 @@ public class ReferenceDataRepository {
     }
 
     public void batchUpsertProducts(List<PositionDetailDTO> positions) {
-        var uniqueProducts = positions.stream().filter(distinctByKey(PositionDetailDTO::getProductId)).toList();
+        // FIX: .getProductId() -> .productId()
+        var uniqueProducts = positions.stream().filter(distinctByKey(PositionDetailDTO::productId)).toList();
         if (uniqueProducts.isEmpty()) return;
 
         String sql = "INSERT INTO Products (product_id, ticker, asset_class, issue_currency) VALUES (?, ?, ?, ?) ON CONFLICT (product_id) DO NOTHING";
 
         jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
-            @Override
-            public void setValues(PreparedStatement ps, int i) throws SQLException {
+            @Override public void setValues(PreparedStatement ps, int i) throws SQLException {
                 PositionDetailDTO p = uniqueProducts.get(i);
-                ps.setInt(1, p.getProductId());
-                ps.setString(2, p.getTicker());
-                ps.setString(3, p.getAssetClass());
-                ps.setString(4, p.getIssueCurrency());
+                // FIX: All getters updated to record style
+                ps.setInt(1, p.productId());
+                ps.setString(2, p.ticker());
+                ps.setString(3, p.assetClass());
+                ps.setString(4, p.issueCurrency());
             }
-
-            @Override
-            public int getBatchSize() {
-                return uniqueProducts.size();
-            }
+            @Override public int getBatchSize() { return uniqueProducts.size(); }
         });
     }
 
