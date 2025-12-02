@@ -1,0 +1,6 @@
+rootProject.name = 'analyticsandtrading'
+
+include 'common'
+include 'positionloader'
+include 'priceservice'
+include 'tradefillprocessor'

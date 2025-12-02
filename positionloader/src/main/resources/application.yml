@@ -1,0 +1,45 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: positionloader
+  threads:
+    virtual: { enabled: true } # Java 21 Feature
+  
+  datasource:
+    url: jdbc:postgresql://localhost:5432/positionloader_db
+    username: ${DB_USER:postgres}
+    password: ${DB_PASS:password}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+    enabled: true
+
+  cache:
+    type: caffeine
+    caffeine:
+      spec: maximumSize=10000,expireAfterWrite=24h
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: positionloader-group
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+    listener:
+      ack-mode: MANUAL_IMMEDIATE
+
+upstream:
+  mspm:
+    base-url: https://api.internal.ms.com/mspm # EOD
+  mspa:
+    base-url: https://api.internal.ms.com/mspa # Intraday
