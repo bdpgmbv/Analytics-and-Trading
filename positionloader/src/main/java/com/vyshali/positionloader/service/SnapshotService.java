@@ -20,29 +20,48 @@ import java.time.LocalDate;
 @Service
 @RequiredArgsConstructor
 public class SnapshotService {
+
     private final MspmIntegrationService mspmService;
     private final ReferenceDataRepository refRepo;
     private final PositionRepository posRepo;
+    private final TransactionRepository txnRepo; // <--- NEW DEPENDENCY
     private final EodTrackerRepository trackerRepo;
     private final EventPublisherService eventPublisher;
     private final MeterRegistry meterRegistry;
 
+    /**
+     * EOD Process:
+     * 1. Fetch Data
+     * 2. Upsert Reference Data
+     * 3. Wipe Transactions (History) & Positions (State)
+     * 4. Insert New Data
+     * 5. Track & Notify
+     */
     @Transactional(rollbackFor = Exception.class)
     public void processEodFromMspm(Integer accountId) {
         Timer.Sample sample = Timer.start(meterRegistry);
         try {
+            // 1. Fetch
             AccountSnapshotDTO snapshot = mspmService.fetchEodSnapshot(accountId);
+
+            // 2. Reference Data
             upsertReferenceData(snapshot);
 
+            // 3. WIPE: Delete old data for this account (Transactions first due to potential FKs, though usually reversed)
+            // Ideally delete child (Trans/Pos) before parent, but here they are siblings pointing to Account.
+            txnRepo.deleteTransactionsByAccount(accountId);
             posRepo.deletePositionsByAccount(accountId);
 
-            // FIX: .getPositions() -> .positions()
+            // 4. LOAD: Insert new data
             if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
+                // Restore State
                 posRepo.batchInsertPositions(accountId, snapshot.positions(), "MSPM_EOD");
+                // Create History Snapshot
+                txnRepo.batchInsertTransactions(accountId, snapshot.positions());
             }
 
+            // 5. Completion Logic
             LocalDate today = LocalDate.now();
-            // FIX: .getClientId() -> .clientId()
             trackerRepo.markAccountComplete(accountId, snapshot.clientId(), today);
 
             int count = (snapshot.positions() == null) ? 0 : snapshot.positions().size();
@@ -51,31 +70,43 @@ public class SnapshotService {
             if (trackerRepo.isClientFullyComplete(snapshot.clientId(), today)) {
                 eventPublisher.publishReportingSignOff(snapshot.clientId(), today);
             }
+
+            log.info("EOD Snapshot completed for Account {}", accountId);
+
         } finally {
             sample.stop(meterRegistry.timer("posloader.eod.duration"));
         }
     }
 
+    /**
+     * Intraday Process:
+     * 1. Upsert Reference Data
+     * 2. Incremental Update on Positions
+     * 3. Notify
+     */
     @Transactional(rollbackFor = Exception.class)
     public void processIntradayPayload(AccountSnapshotDTO snapshot) {
         Timer.Sample sample = Timer.start(meterRegistry);
         try {
             upsertReferenceData(snapshot);
-            // FIX: .getPositions() -> .positions()
+
             if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
-                // FIX: .getAccountId() -> .accountId()
+                // Update State (Add/Subtract logic)
                 posRepo.batchIncrementalUpsert(snapshot.accountId(), snapshot.positions(), "MSPA_INTRA");
+
+                // Optional: You could also insert into TransactionRepo here if you want granular history
+                // txnRepo.batchInsertTransactions(snapshot.accountId(), snapshot.positions());
             }
 
             int count = (snapshot.positions() == null) ? 0 : snapshot.positions().size();
             eventPublisher.publishChangeEvent(snapshot.accountId(), snapshot.clientId(), count, "INTRADAY_UPDATE");
+
         } finally {
             sample.stop(meterRegistry.timer("posloader.intra.duration"));
         }
     }
 
     private void upsertReferenceData(AccountSnapshotDTO snapshot) {
-        // FIX: All getters updated to record style
         refRepo.ensureClientExists(snapshot.clientId(), snapshot.clientName());
         refRepo.ensureFundExists(snapshot.fundId(), snapshot.clientId(), snapshot.fundName(), snapshot.baseCurrency());
         refRepo.upsertAccount(snapshot.accountId(), snapshot.fundId(), snapshot.accountNumber(), snapshot.accountType());
