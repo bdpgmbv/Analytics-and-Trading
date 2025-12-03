@@ -7,6 +7,7 @@ package com.vyshali.hedgeservice.controller;
 
 import com.vyshali.hedgeservice.dto.*;
 import com.vyshali.hedgeservice.service.HedgeAnalyticsService;
+import com.vyshali.hedgeservice.service.HedgeExecutionService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,6 +20,8 @@ import java.util.List;
 public class HedgeController {
 
     private final HedgeAnalyticsService service;
+
+    private final HedgeExecutionService executionService;
 
     // --- READ OPERATIONS (Tabs 1, 2, 3, 4, 5) ---
 
@@ -53,5 +56,12 @@ public class HedgeController {
     public ResponseEntity<String> uploadManualPosition(@RequestBody ManualPositionInputDTO input) {
         service.saveManualPosition(input);
         return ResponseEntity.ok("Manual Position Saved Successfully");
+    }
+
+    // THE "SEND" BUTTON
+    @PostMapping("/execute")
+    public ResponseEntity<String> sendHedgeOrder(@RequestBody HedgeExecutionRequestDTO order) {
+        String orderId = executionService.executeHedge(order);
+        return ResponseEntity.ok("Hedge Order Sent to FX Matrix. ID: " + orderId);
     }
 }

@@ -30,4 +30,13 @@ spring:
       ack-mode: MANUAL_IMMEDIATE
 
 management:
-  endpoints: { web: { exposure: { include: "health,metrics,prometheus" } } }
+  tracing:
+    sampling:
+      probability: 1.0 # Log 100% of requests (for dev/demo only)
+  zipkin:
+    tracing:
+      endpoint: http://tempo:9411/api/v2/spans # Send traces to Tempo container
+  endpoints:
+    web:
+      exposure:
+        include: "health,metrics,prometheus"

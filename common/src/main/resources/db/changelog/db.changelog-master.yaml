@@ -1,3 +1,7 @@
 databaseChangeLog:
   - include:
       file: db/changelog/changes/001-master-schema.sql
+  - include:
+      file: db/changelog/changes/005-performance.sql
+  - include:
+      file: db/changelog/changes/001-fills-schema.sql

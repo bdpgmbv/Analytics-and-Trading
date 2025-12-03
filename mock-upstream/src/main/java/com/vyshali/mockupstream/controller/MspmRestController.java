@@ -6,7 +6,7 @@ package com.vyshali.mockupstream.controller;
  */
 
 import com.vyshali.mockupstream.dto.AccountSnapshotDTO;
-import com.vyshali.mockupstream.service.DataGeneratorService;
+import com.vyshali.mockupstream.service.PositionGeneratorService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -15,10 +15,10 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/mspm")
 @RequiredArgsConstructor
 public class MspmRestController {
-    private final DataGeneratorService dataService;
+    private final PositionGeneratorService generator;
 
     @GetMapping("/accounts/{id}/eod-snapshot")
-    public ResponseEntity<AccountSnapshotDTO> getEodSnapshot(@PathVariable Integer id) {
-        return ResponseEntity.ok(dataService.generateEodSnapshot(id));
+    public ResponseEntity<AccountSnapshotDTO> getEod(@PathVariable Integer id) {
+        return ResponseEntity.ok(generator.getCachedEod(id));
     }
 }

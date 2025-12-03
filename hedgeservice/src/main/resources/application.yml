@@ -16,5 +16,22 @@ spring:
       maximum-pool-size: 20
       read-only: false # Must be FALSE to support Manual Uploads (POST)
 
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://keycloak:8080/realms/trading-realm
+          jwk-set-uri: http://keycloak:8080/realms/trading-realm/protocol/openid-connect/certs
+
 management:
-  endpoints: { web: { exposure: { include: "health,metrics,prometheus" } } }
+  tracing:
+    sampling:
+      probability: 1.0 # Log 100% of requests (for dev/demo only)
+  zipkin:
+    tracing:
+      endpoint: http://tempo:9411/api/v2/spans # Send traces to Tempo container
+  endpoints:
+    web:
+      exposure:
+        include: "health,metrics,prometheus"
+
