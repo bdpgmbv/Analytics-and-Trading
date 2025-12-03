@@ -10,6 +10,8 @@ import jakarta.validation.constraints.NotNull;
 import java.math.BigDecimal;
 
 public record PositionDetailDTO(@NotNull Integer productId, String ticker, String assetClass, String issueCurrency,
-                                @NotNull BigDecimal quantity, String txnType // BUY, SELL
-) {
+                                @NotNull BigDecimal quantity, String txnType, // "BUY", "SELL", "SHORT_SELL"
+
+                                // NEW: The Execution Price (Cost)
+                                BigDecimal price) {
 }

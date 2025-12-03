@@ -1,0 +1,33 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: priceservice
+  threads:
+    virtual: { enabled: true }
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/analyticsandtrading
+    username: ${DB_USER:postgres}
+    password: ${DB_PASS:password}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 30
+
+  liquibase:
+    # Liquibase will look inside the 'common' jar for this path
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+    enabled: true
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: priceservice-group
+      enable-auto-commit: false
+      auto-offset-reset: latest
+    listener:
+      ack-mode: MANUAL_IMMEDIATE
+
+management:
+  endpoints: { web: { exposure: { include: "health,metrics,prometheus" } } }

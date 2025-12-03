@@ -4,7 +4,7 @@ plugins {
     id("io.spring.dependency-management")
 }
 
-group = "com.vyshali.priceservice"
+group = "com.vyshali.hedgeservice"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_21
@@ -12,27 +12,22 @@ java {
 }
 
 dependencies {
-    // Use the shared schema module
-    implementation(project(":common"))
-
+    // Web & DB
     implementation("org.springframework.boot:spring-boot-starter-web")
-    implementation("org.springframework.boot:spring-boot-starter-websocket") // WebSocket
-    implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
-    implementation("org.springframework.boot:spring-boot-starter-cache")
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
 
+    // Database Driver & Pool
     runtimeOnly("org.postgresql:postgresql")
     implementation("com.zaxxer:HikariCP")
-    implementation("org.liquibase:liquibase-core")
-    implementation("com.github.ben-manes.caffeine:caffeine")
 
-    implementation("org.springframework.kafka:spring-kafka")
-    implementation("com.fasterxml.jackson.core:jackson-databind")
+    // Internal Modules (Access to Shared Schema)
+    implementation(project(":common"))
 
+    // Security
     implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
-    implementation("io.micrometer:micrometer-tracing-bridge-brave")
-    implementation("net.logstash.logback:logstash-logback-encoder:7.4")
 
+    // Tools
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
 }

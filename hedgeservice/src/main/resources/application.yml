@@ -1,0 +1,20 @@
+server:
+  port: 8083 # Distinct port (Loader=8080, Price=8082, Hedge=8083)
+
+spring:
+  application:
+    name: hedgeservice
+  threads:
+    virtual: { enabled: true }
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/analyticsandtrading
+    username: ${DB_USER:postgres}
+    password: ${DB_PASS:password}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      read-only: false # Must be FALSE to support Manual Uploads (POST)
+
+management:
+  endpoints: { web: { exposure: { include: "health,metrics,prometheus" } } }

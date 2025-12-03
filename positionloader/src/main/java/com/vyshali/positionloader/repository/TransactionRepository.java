@@ -11,6 +11,7 @@ import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.math.BigDecimal;
 import java.sql.Date;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -24,34 +25,24 @@ public class TransactionRepository {
     private final JdbcTemplate jdbcTemplate;
 
     /**
-     * EOD Cleanup: Wipes transactions for a specific account before reloading.
-     * This ensures we don't have duplicate EOD snapshots in the history table.
+     * EOD Cleanup: Wipes transactions for a specific account.
      */
     public void deleteTransactionsByAccount(Integer accountId) {
         jdbcTemplate.update("DELETE FROM Transactions WHERE account_id = ?", accountId);
     }
 
     /**
-     * Bulk inserts position snapshots into the Transaction history table.
-     * Used during EOD processing to create an audit trail.
+     * Inserts trade history.
+     * Records the exact Price and Cost at the moment of the trade.
      */
     public void batchInsertTransactions(Integer accountId, List<PositionDetailDTO> positions) {
         String sql = """
                     INSERT INTO Transactions (
-                        transaction_id, 
-                        account_id, 
-                        product_id, 
-                        txn_type, 
-                        trade_date, 
-                        quantity, 
-                        created_at
+                        transaction_id, account_id, product_id, txn_type, 
+                        trade_date, quantity, price, cost_local, created_at
                     ) VALUES (
-                        nextval('position_seq'), -- Using existing sequence or create specific 'txn_seq'
-                        ?, 
-                        ?, 
-                        ?, 
-                        ?, 
-                        ?, 
+                        nextval('position_seq'), 
+                        ?, ?, ?, ?, ?, ?, ?, 
                         CURRENT_TIMESTAMP
                     )
                 """;
@@ -60,22 +51,20 @@ public class TransactionRepository {
             @Override
             public void setValues(PreparedStatement ps, int i) throws SQLException {
                 PositionDetailDTO p = positions.get(i);
+                BigDecimal price = p.price() != null ? p.price() : BigDecimal.ZERO;
+                BigDecimal cost = p.quantity().multiply(price);
 
-                // 1. Account ID
                 ps.setInt(1, accountId);
-
-                // 2. Product ID
                 ps.setInt(2, p.productId());
 
-                // 3. Transaction Type (Default to 'EOD_SNAPSHOT' if null, or use payload value)
-                String type = (p.txnType() != null && !p.txnType().isEmpty()) ? p.txnType() : "EOD_SNAPSHOT";
+                // Default to 'EOD_LOAD' if missing, else use BUY/SELL
+                String type = (p.txnType() != null && !p.txnType().isEmpty()) ? p.txnType() : "EOD_LOAD";
                 ps.setString(3, type);
 
-                // 4. Trade Date (Today)
                 ps.setDate(4, Date.valueOf(LocalDate.now()));
-
-                // 5. Quantity
                 ps.setBigDecimal(5, p.quantity());
+                ps.setBigDecimal(6, price); // Execution Price
+                ps.setBigDecimal(7, cost);  // Total Cost
             }
 
             @Override
