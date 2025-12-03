@@ -6,9 +6,7 @@ package com.vyshali.priceservice.listener;
  */
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.vyshali.priceservice.dto.FxRateDTO;
 import com.vyshali.priceservice.dto.PriceTickDTO;
-import com.vyshali.priceservice.service.FxCacheService;
 import com.vyshali.priceservice.service.PriceCacheService;
 import com.vyshali.priceservice.service.PricePersistenceService;
 import com.vyshali.priceservice.service.ValuationService;
@@ -27,7 +25,6 @@ import java.util.List;
 public class MarketDataListener {
 
     private final PriceCacheService priceCache;
-    private final FxCacheService fxCache;
     private final PricePersistenceService persistenceService;
     private final ValuationService valuationService;
     private final ObjectMapper objectMapper;
@@ -38,30 +35,17 @@ public class MarketDataListener {
             try {
                 PriceTickDTO tick = objectMapper.readValue(record.value(), PriceTickDTO.class);
 
-                // 1. Update State
+                // 1. Update State (Redis)
                 priceCache.updatePrice(tick);
+
+                // 2. Queue for DB (Throttled)
                 persistenceService.markDirty(tick.productId());
 
-                // 2. Trigger Calculation (Server-side)
+                // 3. Trigger Server-Side Calculation (Reverse Index -> Math -> Conflation)
                 valuationService.recalculateAndPush(tick.productId());
 
             } catch (Exception e) {
-                log.error("Price Error", e);
-            }
-        }
-        ack.acknowledge();
-    }
-
-    @KafkaListener(topics = "FX_RATES_TICKS", groupId = "fx-group", containerFactory = "batchFactory")
-    public void onFxBatch(List<ConsumerRecord<String, String>> records, Acknowledgment ack) {
-        for (var record : records) {
-            try {
-                FxRateDTO rate = objectMapper.readValue(record.value(), FxRateDTO.class);
-                fxCache.updateFxRate(rate);
-                // Note: Changing FX triggers valuation for ALL products using that currency.
-                // Skipped here for brevity, but same logic as price tick applies.
-            } catch (Exception e) {
-                log.error("FX Error", e);
+                log.error("Price processing error", e);
             }
         }
         ack.acknowledge();

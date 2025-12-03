@@ -7,23 +7,24 @@ plugins {
 group = "com.vyshali.mockupstream"
 version = "1.0.0-SNAPSHOT"
 
-java { sourceCompatibility = JavaVersion.VERSION_21 }
-
 repositories { mavenCentral() }
 
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.kafka:spring-kafka")
+    implementation("com.fasterxml.jackson.core:jackson-databind")
 
-    // FIX: Exclude the problematic yaml dependency from javafaker
+    // Fake Data Generator
     implementation("com.github.javafaker:javafaker:1.0.2") {
         exclude(group = "org.yaml", module = "snakeyaml")
     }
+    implementation("org.yaml:snakeyaml:2.2") // Force newer version
 
-    // FIX: Explicitly include the standard Spring Boot supported version
-    implementation("org.yaml:snakeyaml")
+    // Observability
+    implementation("io.micrometer:micrometer-registry-prometheus")
+    implementation("io.micrometer:micrometer-tracing-bridge-brave")
+    implementation("io.zipkin.reporter2:zipkin-reporter-brave")
 
-    implementation("com.fasterxml.jackson.core:jackson-databind")
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
 }

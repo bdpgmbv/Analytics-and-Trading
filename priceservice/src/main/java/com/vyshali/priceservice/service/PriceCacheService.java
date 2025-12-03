@@ -6,20 +6,31 @@ package com.vyshali.priceservice.service;
  */
 
 import com.vyshali.priceservice.dto.PriceTickDTO;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.time.Duration;
 
 @Service
+@RequiredArgsConstructor
 public class PriceCacheService {
-    private final Map<Integer, PriceTickDTO> realTimeCache = new ConcurrentHashMap<>();
 
+    private final RedisTemplate<String, PriceTickDTO> redisTemplate;
+    private static final String KEY_PREFIX = "PRICE:";
+
+    /**
+     * Updates Redis with the latest tick.
+     * Uses Redis to share state across multiple instances of PriceService.
+     */
     public void updatePrice(PriceTickDTO tick) {
-        realTimeCache.put(tick.productId(), tick);
+        redisTemplate.opsForValue().set(KEY_PREFIX + tick.productId(), tick, Duration.ofHours(24));
     }
 
+    /**
+     * Fetches the latest effective price from Redis.
+     */
     public PriceTickDTO getPrice(Integer productId) {
-        return realTimeCache.get(productId);
+        return redisTemplate.opsForValue().get(KEY_PREFIX + productId);
     }
 }

@@ -7,7 +7,9 @@ package com.vyshali.mockupstream;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableAsync;
 
+@EnableAsync // Critical for background price generation
 @SpringBootApplication
 public class MockUpstreamApplication {
     public static void main(String[] args) {

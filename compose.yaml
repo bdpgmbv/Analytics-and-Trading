@@ -1,52 +1,112 @@
 version: '3.8'
+
 services:
-  # --- DATABASES & BROKERS ---
+  # ==========================================
+  # 1. THE FRONT DOOR (Gateway)
+  # ==========================================
+  gateway:
+    build:
+      context: ./gateway
+    container_name: gateway
+    ports: ["8080:8080"]
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - KEYCLOAK_URI=http://keycloak:8080
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
+    depends_on:
+      - keycloak
+      - positionloader
+      - priceservice
+      - hedgeservice
+      - tradefillprocessor
+
+  # ==========================================
+  # 2. IDENTITY & SECURITY (Keycloak)
+  # ==========================================
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0.0
+    container_name: auth-server
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports: ["8180:8080"]
+    volumes:
+      - ./infra/keycloak-realm.json:/opt/keycloak/data/import/realm.json:ro
+
+  # ==========================================
+  # 3. DATA LAYER (Postgres & Redis)
+  # ==========================================
   postgres:
     image: postgres:15-alpine
     container_name: trading-db
+    ports: ["5432:5432"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
       POSTGRES_DB: analyticsandtrading
-    ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql/data]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    ports: ["6379:6379"]
+
+  # ==========================================
+  # 4. MESSAGING (Kafka)
+  # ==========================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
 
   kafka:
     image: confluentinc/cp-kafka:7.6.0
-    container_name: trading-kafka
+    container_name: kafka
     ports: ["9092:9092"]
+    depends_on: [zookeeper]
     environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_PROCESS_ROLES: 'broker,controller'
-      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
-      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
-      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
-      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
-      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
 
-  # --- POSITION LOADER (Consumer) ---
-  positionloader:
-    build:
-      context: ./positionloader
-    container_name: positionloader
-    ports: ["8080:8080"]
+  # ==========================================
+  # 5. OBSERVABILITY (The Dashboard)
+  # ==========================================
+  tempo:
+    image: grafana/tempo:2.3.1
+    container_name: tempo
+    command: [ "-config.file=/etc/tempo.yaml" ]
+    volumes:
+      - ./infra/tempo-config.yaml:/etc/tempo.yaml
+    ports: ["3200", "4317"]
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./infra/prometheus.yaml:/etc/prometheus/prometheus.yml
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
     environment:
-      SPRING_PROFILES_ACTIVE: local
-      DB_USER: postgres
-      DB_PASS: password
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      UPSTREAM_MSPM_BASE_URL: http://mock-upstream:8081/mspm
-      # CRITICAL: 2GB Heap to handle parsing large JSON payloads
-      JAVA_TOOL_OPTIONS: "-Xmx2g"
-    depends_on: [postgres, kafka, mock-upstream]
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    ports: ["3000:3000"]
+    depends_on: [prometheus, tempo]
 
-  # --- MOCK UPSTREAM (Producer) ---
+  # ==========================================
+  # 6. APPLICATION SERVICES (Microservices)
+  # ==========================================
   mock-upstream:
     build:
       context: ./mock-upstream
@@ -54,9 +114,51 @@ services:
     ports: ["8081:8081"]
     environment:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      # CRITICAL: 2GB Heap to generate massive object lists in memory
-      JAVA_TOOL_OPTIONS: "-Xmx2g"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
     depends_on: [kafka]
+
+  positionloader:
+    build:
+      context: ./positionloader
+    container_name: positionloader
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      UPSTREAM_MSPM_BASE_URL: http://mock-upstream:8081/mspm
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+    depends_on: [postgres, kafka]
+
+  priceservice:
+    build:
+      context: ./priceservice
+    container_name: priceservice
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_DATA_REDIS_HOST: redis
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+    depends_on: [postgres, kafka, redis]
+
+  hedgeservice:
+    build:
+      context: ./hedgeservice
+    container_name: hedgeservice
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+    depends_on: [postgres, kafka]
+
+  tradefillprocessor:
+    build:
+      context: ./tradefillprocessor
+    container_name: tradefillprocessor
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_DATA_REDIS_HOST: redis
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+    depends_on: [postgres, kafka, redis]
 
 volumes:
   pgdata:

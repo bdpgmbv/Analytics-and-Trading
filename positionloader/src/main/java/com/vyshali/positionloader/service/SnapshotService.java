@@ -27,6 +27,7 @@ public class SnapshotService {
     private final TransactionRepository txnRepo; // <--- NEW DEPENDENCY
     private final EodTrackerRepository trackerRepo;
     private final EventPublisherService eventPublisher;
+    private final ExposureEnrichmentService exposureService; // <--- INJECTED
     private final MeterRegistry meterRegistry;
 
     /**
@@ -47,20 +48,21 @@ public class SnapshotService {
             // 2. Reference Data
             upsertReferenceData(snapshot);
 
-            // 3. WIPE: Delete old data for this account (Transactions first due to potential FKs, though usually reversed)
-            // Ideally delete child (Trans/Pos) before parent, but here they are siblings pointing to Account.
+            // 3. Wipe Old Data
             txnRepo.deleteTransactionsByAccount(accountId);
             posRepo.deletePositionsByAccount(accountId);
 
-            // 4. LOAD: Insert new data
+            // 4. Load New Data
             if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
-                // Restore State
                 posRepo.batchInsertPositions(accountId, snapshot.positions(), "MSPM_EOD");
-                // Create History Snapshot
                 txnRepo.batchInsertTransactions(accountId, snapshot.positions());
+
+                // 5. ENRICHMENT (New Step)
+                // Calculate Specific/Generic exposures based on the new positions
+                exposureService.enrichSnapshot(accountId);
             }
 
-            // 5. Completion Logic
+            // 6. Complete
             LocalDate today = LocalDate.now();
             trackerRepo.markAccountComplete(accountId, snapshot.clientId(), today);
 
@@ -70,7 +72,6 @@ public class SnapshotService {
             if (trackerRepo.isClientFullyComplete(snapshot.clientId(), today)) {
                 eventPublisher.publishReportingSignOff(snapshot.clientId(), today);
             }
-
             log.info("EOD Snapshot completed for Account {}", accountId);
 
         } finally {

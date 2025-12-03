@@ -1,0 +1,40 @@
+server:
+  port: 8084 # Distinct Port
+
+spring:
+  application:
+    name: tradefillprocessor
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: trade-processor-group
+      auto-offset-reset: latest
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/analyticsandtrading
+    username: ${DB_USER:postgres}
+    password: ${DB_PASS:password}
+    hikari:
+      maximum-pool-size: 20
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+  liquibase:
+    change-log: classpath:db/changelog/changes/001-fills-schema.sql
+    enabled: true
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0 # Log 100% of requests (for dev/demo only)
+  zipkin:
+    tracing:
+      endpoint: http://tempo:9411/api/v2/spans # Send traces to Tempo container
+  endpoints:
+    web:
+      exposure:
+        include: "health,metrics,prometheus"

@@ -7,4 +7,6 @@ include 'tradefillprocessor'
 include 'mock-upstream'
 include 'priceservice'
 include 'hedgeservice'
+include 'tradefillprocessor'
+include 'gateway'
 

@@ -1,0 +1,51 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: gateway
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Validate tokens against Keycloak
+          issuer-uri: ${KEYCLOAK_URI:http://localhost:8180}/realms/trading-realm
+          jwk-set-uri: ${KEYCLOAK_URI:http://localhost:8180}/realms/trading-realm/protocol/openid-connect/certs
+
+  cloud:
+    gateway:
+      default-filters:
+        - TokenRelay # Pass the JWT to downstream services
+      routes:
+        - id: position-loader
+          uri: http://positionloader:8080
+          predicates:
+            - Path=/api/loader/**
+        - id: hedge-service
+          uri: http://hedgeservice:8080
+          predicates:
+            - Path=/api/hedge/**
+        - id: price-service-ws
+          uri: ws://priceservice:8080
+          predicates:
+            - Path=/ws-market-data/**
+        - id: trade-processor
+          uri: http://tradefillprocessor:8080
+          predicates:
+            - Path=/api/trades/**
+
+logging:
+  level:
+    org.springframework.cloud.gateway: INFO
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0 # Log 100% of requests (for dev/demo only)
+  zipkin:
+    tracing:
+      endpoint: http://tempo:9411/api/v2/spans # Send traces to Tempo container
+  endpoints:
+    web:
+      exposure:
+        include: "health,metrics,prometheus"

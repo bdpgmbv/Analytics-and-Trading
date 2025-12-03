@@ -27,6 +27,10 @@ dependencies {
     // Security
     implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
 
+    implementation("io.micrometer:micrometer-registry-prometheus")
+    implementation("io.micrometer:micrometer-tracing-bridge-brave")
+    implementation("io.zipkin.reporter2:zipkin-reporter-brave")
+
     // Tools
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
