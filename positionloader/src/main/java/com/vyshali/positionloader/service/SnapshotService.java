@@ -6,6 +6,7 @@ package com.vyshali.positionloader.service;
  */
 
 import com.vyshali.positionloader.dto.AccountSnapshotDTO;
+import com.vyshali.positionloader.dto.TradeEventDTO;
 import com.vyshali.positionloader.repository.*;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -14,6 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 
 @Slf4j

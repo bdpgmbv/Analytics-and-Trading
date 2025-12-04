@@ -16,11 +16,21 @@ import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.ListOffsetsResult;
+import org.apache.kafka.clients.admin.OffsetSpec;
+import org.apache.kafka.common.TopicPartition;
+import org.springframework.kafka.core.KafkaAdmin;
+import org.springframework.scheduling.annotation.Scheduled;
+
+import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 import java.time.Duration;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.Map;
 
 @Slf4j
 @Service
@@ -28,7 +38,47 @@ import java.util.Map;
 public class DlqReplayService {
 
     private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final KafkaAdmin kafkaAdmin;
     private final KafkaProperties kafkaProperties; // Auto-configured by Spring Boot
+    private final AtomicLong dlqDepth = new AtomicLong(0);
+
+    // Monitor this topic for lag
+    private static final String DLQ_TOPIC = "MSPA_INTRADAY.DLT";
+
+    public DlqReplayService(KafkaTemplate<String, Object> kafkaTemplate, KafkaAdmin kafkaAdmin, MeterRegistry registry) {
+        this.kafkaTemplate = kafkaTemplate;
+        this.kafkaAdmin = kafkaAdmin;
+
+        // Register the gauge with Prometheus
+        Gauge.builder("kafka.dlq.depth", dlqDepth, AtomicLong::get).description("Number of messages in the Dead Letter Queue").register(registry);
+    }
+
+    /**
+     * Check DLQ size every 60 seconds
+     */
+    @Scheduled(fixedRate = 60000)
+    public void monitorDlqDepth() {
+        try (AdminClient admin = AdminClient.create(kafkaAdmin.getConfigurationProperties())) {
+            TopicPartition tp = new TopicPartition(DLQ_TOPIC, 0);
+
+            // Get End Offset
+            Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> endOffsets = admin.listOffsets(Map.of(tp, OffsetSpec.latest())).all().get();
+
+            // Get Start Offset
+            Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> startOffsets = admin.listOffsets(Map.of(tp, OffsetSpec.earliest())).all().get();
+
+            long end = endOffsets.get(tp).offset();
+            long start = startOffsets.get(tp).offset();
+            long count = end - start;
+
+            dlqDepth.set(count);
+            if (count > 0) log.warn("ALERT: DLQ has {} pending messages!", count);
+
+        } catch (Exception e) {
+            // Topic might not exist yet, ignore
+            dlqDepth.set(0);
+        }
+    }
 
     /**
      * Reads messages from {topic}.DLT and republishes them to {topic}.
