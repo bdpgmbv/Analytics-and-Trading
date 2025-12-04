@@ -7,12 +7,8 @@ package com.vyshali.mockupstream.dto;
 
 import java.math.BigDecimal;
 
-public record PositionDetailDTO(Integer productId,      // 1
-                                String ticker,          // 2
-                                String assetClass,      // 3
-                                String issueCurrency,   // 4
-                                BigDecimal quantity,    // 5
-                                String txnType,         // 6 (This is likely the missing one causing the error)
-                                BigDecimal price        // 7
+public record PositionDetailDTO(Integer productId, String ticker, String assetClass, String issueCurrency,
+                                BigDecimal quantity, String txnType, BigDecimal price, String externalRefId
+                                // <--- NEW FIELD
 ) {
 }

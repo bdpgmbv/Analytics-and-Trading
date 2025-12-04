@@ -29,18 +29,19 @@ public class TransactionRepository {
     }
 
     public void batchInsertTransactions(Integer accountId, List<PositionDetailDTO> positions) {
-        // UPDATED SQL: Added 'ON CONFLICT DO NOTHING' to prevent crashes on duplicates
+        // TIER 1 UPGRADE: Explicitly handle duplicate replay with ON CONFLICT
         String sql = """
-            INSERT INTO Transactions (
-                transaction_id, account_id, product_id, txn_type, 
-                trade_date, quantity, price, cost_local, created_at
-            ) VALUES (
-                nextval('position_seq'), 
-                ?, ?, ?, ?, ?, ?, ?, 
-                CURRENT_TIMESTAMP
-            )
-            ON CONFLICT DO NOTHING 
-        """;
+                    INSERT INTO Transactions (
+                        transaction_id, account_id, product_id, txn_type, 
+                        trade_date, quantity, price, cost_local, 
+                        external_ref_id, created_at
+                    ) VALUES (
+                        nextval('position_seq'), 
+                        ?, ?, ?, ?, ?, ?, ?, ?, 
+                        CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT (external_ref_id) DO NOTHING 
+                """;
 
         jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
             @Override
@@ -57,6 +58,12 @@ public class TransactionRepository {
                 ps.setBigDecimal(5, p.quantity());
                 ps.setBigDecimal(6, price);
                 ps.setBigDecimal(7, cost);
+
+                // CRITICAL FIX: Insert the unique ID provided by upstream
+                // If this is null (legacy data), we generate a fallback to avoid crash,
+                // though real prod should reject nulls.
+                String refId = (p.externalRefId() != null) ? p.externalRefId() : "LEGACY-" + System.nanoTime() + "-" + i;
+                ps.setString(8, refId);
             }
 
             @Override

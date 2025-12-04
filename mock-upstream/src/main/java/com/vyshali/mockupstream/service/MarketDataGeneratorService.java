@@ -39,7 +39,10 @@ public class MarketDataGeneratorService {
             for (int k = 0; k < 5; k++) {
                 int id = random.nextInt(100);
                 prices[id] += (random.nextDouble() - 0.5);
-                PriceTickDTO tick = new PriceTickDTO(1000 + id, "TICKER_" + (1000 + id), BigDecimal.valueOf(prices[id]), "USD", Instant.now(), "FILTER_REALTIME");
+
+                // FIXED: Now passing "EQUITY" as assetClass
+                PriceTickDTO tick = new PriceTickDTO(1000 + id, "TICKER_" + (1000 + id), BigDecimal.valueOf(prices[id]), "USD", "EQUITY", // <--- NEW
+                        Instant.now(), "FILTER_REALTIME");
                 publisher.sendPriceTick(tick);
             }
             // Generate FX Rates
