@@ -1,5 +1,5 @@
 server:
-  port: 8083 # Distinct port (Loader=8080, Price=8082, Hedge=8083)
+  port: 8080 # Distinct port (Loader=8080, Price=8082, Hedge=8083)
 
 spring:
   application:
