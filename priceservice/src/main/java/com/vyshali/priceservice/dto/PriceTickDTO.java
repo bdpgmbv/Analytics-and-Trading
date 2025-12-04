@@ -8,6 +8,8 @@ package com.vyshali.priceservice.dto;
 import java.math.BigDecimal;
 import java.time.Instant;
 
-public record PriceTickDTO(Integer productId, String ticker, BigDecimal price, String currency, Instant timestamp,
-                           String source) {
+// Added assetClass field
+public record PriceTickDTO(Integer productId, String ticker, BigDecimal price, String currency, String assetClass,
+                           // <--- NEW FIELD
+                           Instant timestamp, String source) {
 }

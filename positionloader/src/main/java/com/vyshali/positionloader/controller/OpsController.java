@@ -30,7 +30,8 @@ public class OpsController {
     private final DlqReplayService dlqReplayService;
 
     @PostMapping("/eod/{accountId}")
-    @PreAuthorize("hasAuthority('SCOPE_fxan.ops.write')")
+    // TIER 1 SECURITY: Checks specifically if user has rights for this specific account
+    @PreAuthorize("hasPermission(#accountId, 'TRIGGER_EOD')")
     public ResponseEntity<String> triggerEod(@PathVariable Integer accountId, Authentication auth) {
         String user = getName(auth);
         auditService.logAction("TRIGGER_EOD", accountId.toString(), user, "STARTED"); // <--- USE SERVICE

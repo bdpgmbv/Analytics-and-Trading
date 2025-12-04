@@ -21,7 +21,6 @@ public class PriceCacheService {
 
     /**
      * Updates Redis with the latest tick.
-     * Uses Redis to share state across multiple instances of PriceService.
      */
     public void updatePrice(PriceTickDTO tick) {
         redisTemplate.opsForValue().set(KEY_PREFIX + tick.productId(), tick, Duration.ofHours(24));
@@ -32,5 +31,15 @@ public class PriceCacheService {
      */
     public PriceTickDTO getPrice(Integer productId) {
         return redisTemplate.opsForValue().get(KEY_PREFIX + productId);
+    }
+
+    /**
+     * NEW METHOD: Retrieves asset class from the cached tick.
+     * Used by ValuationService to select the correct pricing strategy.
+     */
+    public String getAssetClass(Integer productId) {
+        PriceTickDTO tick = getPrice(productId);
+        // Default to EQUITY if missing or not yet cached, to prevent NPE in strategies
+        return (tick != null && tick.assetClass() != null) ? tick.assetClass() : "EQUITY";
     }
 }
