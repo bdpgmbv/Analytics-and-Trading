@@ -151,4 +151,19 @@ public class PositionRepository {
             }
         });
     }
+
+    // ... existing imports ...
+
+    // Add this method to handle incremental updates
+    public void upsertPositionQuantity(Integer accountId, Integer productId, BigDecimal quantityDelta) {
+        String sql = """
+            INSERT INTO Positions (account_id, product_id, quantity, source_system, updated_at)
+            VALUES (?, ?, ?, 'INTRADAY', CURRENT_TIMESTAMP)
+            ON CONFLICT (account_id, product_id)
+            DO UPDATE SET 
+                quantity = Positions.quantity + EXCLUDED.quantity,
+                updated_at = CURRENT_TIMESTAMP
+        """;
+        jdbcTemplate.update(sql, accountId, productId, quantityDelta);
+    }
 }

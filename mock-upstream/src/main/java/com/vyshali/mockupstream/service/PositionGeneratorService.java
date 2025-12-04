@@ -21,9 +21,19 @@ public class PositionGeneratorService {
     private final Map<Integer, AccountSnapshotDTO> eodCache = new ConcurrentHashMap<>();
 
     public AccountSnapshotDTO generateEod(Integer accountId, int size) {
-        List<PositionDetailDTO> positions = IntStream.range(0, size).mapToObj(i -> new PositionDetailDTO(1000 + i, "TICKER_" + (1000 + i), "EQUITY", "USD", BigDecimal.valueOf(random.nextInt(1000)), "EOD_HOLDING", BigDecimal.valueOf(100 + random.nextInt(50)))).toList();
+        // Generate a list of random positions
+        List<PositionDetailDTO> positions = IntStream.range(0, size).mapToObj(i -> new PositionDetailDTO(1000 + i,                       // 1. productId
+                "TICKER_" + (1000 + i),           // 2. ticker
+                "EQUITY",                       // 3. assetClass
+                "USD",                          // 4. issueCurrency
+                BigDecimal.valueOf(random.nextInt(1000)), // 5. quantity
+                "EOD_HOLDING",                  // 6. txnType
+                BigDecimal.valueOf(100 + random.nextInt(50)) // 7. price
+        )).toList();
 
+        // Create the snapshot wrapper
         AccountSnapshotDTO snapshot = new AccountSnapshotDTO(100, "Mock Client", 200, "Mock Fund", "USD", accountId, "ACC-" + accountId, "CUSTODY", positions);
+
         eodCache.put(accountId, snapshot);
         return snapshot;
     }
