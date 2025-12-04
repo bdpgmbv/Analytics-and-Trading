@@ -78,7 +78,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
 
   # ==========================================
-  # 5. OBSERVABILITY (The Dashboard)
+  # 5. OBSERVABILITY
   # ==========================================
   tempo:
     image: grafana/tempo:2.3.1
@@ -105,7 +105,7 @@ services:
     depends_on: [prometheus, tempo]
 
   # ==========================================
-  # 6. APPLICATION SERVICES (Microservices)
+  # 6. APPLICATION SERVICES
   # ==========================================
   mock-upstream:
     build:
@@ -128,6 +128,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
     depends_on: [postgres, kafka]
 
+  # UPDATED: Price Service with Sharding Config
   priceservice:
     build:
       context: ./priceservice
@@ -137,12 +138,17 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       SPRING_DATA_REDIS_HOST: redis
       OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+      # Sharding Env Vars
+      SHARD_ID: 0
+      TOTAL_SHARDS: 1
     depends_on: [postgres, kafka, redis]
 
+  # UPDATED: Hedge Service with FIX Ports
   hedgeservice:
     build:
       context: ./hedgeservice
     container_name: hedgeservice
+    ports: ["9898:9898"] # <--- NEW: Exposing FIX Port
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
