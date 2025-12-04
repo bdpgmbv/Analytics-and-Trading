@@ -34,7 +34,6 @@ import java.util.HashMap;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class DlqReplayService {
 
     private final KafkaTemplate<String, Object> kafkaTemplate;
@@ -45,10 +44,10 @@ public class DlqReplayService {
     // Monitor this topic for lag
     private static final String DLQ_TOPIC = "MSPA_INTRADAY.DLT";
 
-    public DlqReplayService(KafkaTemplate<String, Object> kafkaTemplate, KafkaAdmin kafkaAdmin, MeterRegistry registry) {
+    public DlqReplayService(KafkaTemplate<String, Object> kafkaTemplate, KafkaAdmin kafkaAdmin, MeterRegistry registry, KafkaProperties kafkaProperties) {
         this.kafkaTemplate = kafkaTemplate;
         this.kafkaAdmin = kafkaAdmin;
-
+        this.kafkaProperties = kafkaProperties;
         // Register the gauge with Prometheus
         Gauge.builder("kafka.dlq.depth", dlqDepth, AtomicLong::get).description("Number of messages in the Dead Letter Queue").register(registry);
     }

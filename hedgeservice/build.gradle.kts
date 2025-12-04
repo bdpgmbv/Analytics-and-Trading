@@ -31,6 +31,9 @@ dependencies {
     implementation("io.micrometer:micrometer-tracing-bridge-brave")
     implementation("io.zipkin.reporter2:zipkin-reporter-brave")
 
+    // Add this dependency for KafkaTemplate
+    implementation("org.springframework.kafka:spring-kafka")
+
     // Tools
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
