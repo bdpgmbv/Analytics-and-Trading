@@ -10,6 +10,7 @@ import com.vyshali.priceservice.dto.ValuationDTO;
 import com.vyshali.priceservice.service.strategy.PricingStrategy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
@@ -25,39 +26,59 @@ public class ValuationService {
     private final PositionCacheService positionCache;
     private final PriceCacheService priceCache;
     private final WebSocketConflationService conflationService;
-    private final List<PricingStrategy> pricingStrategies; // Injected List of Strategies
+
+    // Injected Strategies (FastPricingStrategy, etc.)
+    private final List<PricingStrategy> pricingStrategies;
 
     @Lazy
     private final FxCacheService fxCache;
 
+    // SHARDING CONFIG
+    @Value("${app.sharding.shard-id:0}")
+    private int shardId;
+
+    @Value("${app.sharding.total-shards:1}")
+    private int totalShards;
+
+    /**
+     * Core Calculation Logic.
+     */
     public void recalculateAndPush(Integer productId) {
-        Set<Integer> affectedAccounts = positionCache.getAccountsHoldingProduct(productId);
+        // 1. Get Accounts holding this product
+        Set<Integer> allAccounts = positionCache.getAccountsHoldingProduct(productId);
+
+        // 2. Get Data
         PriceTickDTO priceTick = priceCache.getPrice(productId);
-        String assetClass = priceCache.getAssetClass(productId); // Assuming cached metadata
+        if (allAccounts == null || allAccounts.isEmpty() || priceTick == null) return;
 
-        if (affectedAccounts == null || affectedAccounts.isEmpty() || priceTick == null) return;
-
+        // 3. Register Currency
         fxCache.registerProductCurrency(productId, priceTick.currency());
 
-        // Select Strategy (Tier 1 Pattern)
-        PricingStrategy strategy = pricingStrategies.stream().filter(s -> s.supports(assetClass)).findFirst().orElse((qty, tick, fx) -> tick.price().multiply(qty).multiply(fx)); // Default fallback
+        // 4. Select Strategy (GC Optimization)
+        // Default to naive math if no strategy matches
+        String assetClass = priceCache.getAssetClass(productId);
+        PricingStrategy strategy = pricingStrategies.stream().filter(s -> s.supports(assetClass)).findFirst().orElse((q, p, f) -> p.price().multiply(q).multiply(f));
 
-        affectedAccounts.forEach(accountId -> {
-            try {
-                BigDecimal qty = positionCache.getQuantity(accountId, productId);
-                if (qty.compareTo(BigDecimal.ZERO) == 0) return;
+        // 5. SHARDED PROCESSING LOOP
+        allAccounts.stream()
+                // LOGICAL SHARDING: Only process accounts belonging to this node
+                .filter(accountId -> (accountId % totalShards) == shardId).forEach(accountId -> {
+                    try {
+                        BigDecimal qty = positionCache.getQuantity(accountId, productId);
+                        if (qty.compareTo(BigDecimal.ZERO) == 0) return;
 
-                BigDecimal fxRate = fxCache.getConversionRate(priceTick.currency(), "USD");
+                        BigDecimal fxRate = fxCache.getConversionRate(priceTick.currency(), "USD");
 
-                // Polymorphic Calculation
-                BigDecimal marketValue = strategy.calculateMarketValue(qty, priceTick, fxRate);
+                        // fast primitive calculation
+                        BigDecimal marketValue = strategy.calculateMarketValue(qty, priceTick, fxRate);
 
-                ValuationDTO valuation = new ValuationDTO(accountId, productId, marketValue, priceTick.price(), fxRate, "REAL_TIME");
-                conflationService.queueValuation(valuation);
+                        ValuationDTO valuation = new ValuationDTO(accountId, productId, marketValue, priceTick.price(), fxRate, "REAL_TIME");
 
-            } catch (Exception e) {
-                log.error("Valuation calculation error", e);
-            }
-        });
+                        conflationService.queueValuation(valuation);
+
+                    } catch (Exception e) {
+                        log.error("Valuation calculation error for Account {}", accountId, e);
+                    }
+                });
     }
 }

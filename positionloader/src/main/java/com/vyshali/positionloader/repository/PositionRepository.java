@@ -22,28 +22,60 @@ public class PositionRepository {
 
     private final JdbcTemplate jdbcTemplate;
 
-    /**
-     * EOD Cleanup: Wipes positions for a specific account before reloading.
-     */
-    public void deletePositionsByAccount(Integer accountId) {
-        jdbcTemplate.update("DELETE FROM Positions WHERE account_id = ?", accountId);
+    // ==================================================================================
+    // 1. BLUE/GREEN BATCH MANAGEMENT
+    // ==================================================================================
+
+    public int createNextBatch(Integer accountId) {
+        // Find the highest batch ID currently used (or 0 if none)
+        Integer maxId = jdbcTemplate.queryForObject("SELECT COALESCE(MAX(batch_id), 0) FROM Account_Batches WHERE account_id = ?", Integer.class, accountId);
+        int nextId = maxId + 1;
+
+        // Create the new batch in 'STAGING' mode (invisible to UI)
+        jdbcTemplate.update("INSERT INTO Account_Batches (account_id, batch_id, status) VALUES (?, ?, 'STAGING')", accountId, nextId);
+
+        return nextId;
     }
 
+    public void activateBatch(Integer accountId, int batchId) {
+        // 1. Archive the currently ACTIVE batch
+        jdbcTemplate.update("UPDATE Account_Batches SET status = 'ARCHIVED' WHERE account_id = ? AND status = 'ACTIVE'", accountId);
+
+        // 2. Flip the STAGING batch to ACTIVE
+        jdbcTemplate.update("UPDATE Account_Batches SET status = 'ACTIVE' WHERE account_id = ? AND batch_id = ?", accountId, batchId);
+    }
+
+    public void cleanUpArchivedBatches(Integer accountId) {
+        // 1. Delete actual position rows from old batches
+        String sql = """
+                    DELETE FROM Positions 
+                    WHERE account_id = ? 
+                      AND batch_id IN (SELECT batch_id FROM Account_Batches WHERE account_id = ? AND status = 'ARCHIVED')
+                """;
+        jdbcTemplate.update(sql, accountId, accountId);
+
+        // 2. Delete the batch metadata records
+        jdbcTemplate.update("DELETE FROM Account_Batches WHERE account_id = ? AND status = 'ARCHIVED'", accountId);
+    }
+
+    // ==================================================================================
+    // 2. WRITE OPERATIONS
+    // ==================================================================================
+
     /**
-     * EOD Load: Batch Insert (Snapshot).
-     * Overwrites state with new Cost/Quantity.
+     * EOD Load: Inserts into a specific (Staging) batch.
      */
-    public void batchInsertPositions(Integer accountId, List<PositionDetailDTO> positions, String source) {
+    public void batchInsertPositions(Integer accountId, List<PositionDetailDTO> positions, String source, int batchId) {
         String sql = """
                     INSERT INTO Positions (
                         position_id, account_id, product_id, 
                         quantity, avg_cost_price, cost_local, 
-                        source_system, position_type
+                        source_system, position_type, batch_id
                     )
                     VALUES (
                         nextval('position_seq'), ?, ?, 
                         ?, ?, ?, 
-                        ?, 'PHYSICAL'
+                        ?, 'PHYSICAL', ?
                     )
                 """;
 
@@ -57,9 +89,10 @@ public class PositionRepository {
                 ps.setInt(1, accountId);
                 ps.setInt(2, p.productId());
                 ps.setBigDecimal(3, p.quantity());
-                ps.setBigDecimal(4, price);      // avg_cost_price (Initial)
-                ps.setBigDecimal(5, totalCost);  // cost_local
+                ps.setBigDecimal(4, price);
+                ps.setBigDecimal(5, totalCost);
                 ps.setString(6, source);
+                ps.setInt(7, batchId); // Insert into the specific batch
             }
 
             @Override
@@ -70,41 +103,41 @@ public class PositionRepository {
     }
 
     /**
-     * INTRADAY Load: Incremental Upsert.
-     * Logic:
-     * 1. Qty: Add (Buy) or Subtract (Sell).
-     * 2. Avg Cost: Update on BUY only (Weighted Average). Keep same on SELL.
+     * Intraday Load: Incremental Upsert on the ACTIVE batch.
      */
     public void batchIncrementalUpsert(Integer accountId, List<PositionDetailDTO> positions, String source) {
+        // 1. Resolve the currently Active Batch
+        Integer activeBatchId;
+        try {
+            activeBatchId = jdbcTemplate.queryForObject("SELECT batch_id FROM Account_Batches WHERE account_id = ? AND status = 'ACTIVE'", Integer.class, accountId);
+        } catch (Exception e) {
+            // Fallback: If no batch exists, create one (auto-healing)
+            activeBatchId = createNextBatch(accountId);
+            activateBatch(accountId, activeBatchId);
+        }
+        final int batchId = activeBatchId;
+
+        // 2. Perform Upsert
         String sql = """
                     INSERT INTO Positions (
-                        account_id, product_id, quantity, avg_cost_price, cost_local, source_system, position_type
+                        account_id, product_id, quantity, avg_cost_price, cost_local, source_system, position_type, batch_id
                     )
                     VALUES (
                         ?, ?, 
-                        -- 1. Initial Qty (Signed)
                         CASE WHEN ? IN ('SELL', 'SHORT_SELL') THEN -? ELSE ? END, 
-                        -- 2. Initial Cost (Incoming Price)
                         ?, 
-                        -- 3. Initial Total Cost (Qty * Price)
                         (CASE WHEN ? IN ('SELL', 'SHORT_SELL') THEN -? ELSE ? END) * ?,
-                        ?, 'PHYSICAL'
+                        ?, 'PHYSICAL', ?
                     )
-                    ON CONFLICT (account_id, product_id) 
+                    ON CONFLICT (account_id, product_id) WHERE batch_id = ?  -- Partial Index Conflict (Postgres Specific)
                     DO UPDATE SET 
-                        -- 4. Calculate New Weighted Average Cost (Only changes on BUY)
-                        -- NewWAC = ((CurrentTotalCost) + (TradeQty * TradePrice)) / (CurrentQty + TradeQty)
                         avg_cost_price = CASE 
-                            WHEN EXCLUDED.quantity > 0 THEN -- It is a BUY (Positive Qty)
+                            WHEN EXCLUDED.quantity > 0 THEN 
                                 ( (Positions.quantity * Positions.avg_cost_price) + (EXCLUDED.quantity * EXCLUDED.avg_cost_price) ) 
                                 / NULLIF((Positions.quantity + EXCLUDED.quantity), 0)
-                            ELSE Positions.avg_cost_price -- SELLs don't change Avg Cost per share
+                            ELSE Positions.avg_cost_price 
                         END,
-                
-                        -- 5. Update Quantity (Add the signed value)
                         quantity = Positions.quantity + EXCLUDED.quantity, 
-                
-                        -- 6. Recalculate Total Cost based on new Qty and (potentially new) Avg Price
                         cost_local = (Positions.quantity + EXCLUDED.quantity) * (
                             CASE 
                                 WHEN EXCLUDED.quantity > 0 THEN 
@@ -113,10 +146,15 @@ public class PositionRepository {
                                 ELSE Positions.avg_cost_price 
                             END
                         ),
-                
                         source_system = EXCLUDED.source_system,
                         updated_at = CURRENT_TIMESTAMP
                 """;
+
+        // Note: The ON CONFLICT clause above assumes you have a unique constraint/index on (account_id, product_id, batch_id).
+        // Since we added batch_id to the table, we should ideally drop the old constraint and add a new one including batch_id.
+        // For this code to work strictly as written, ensure you run:
+        // DROP INDEX uq_pos_account_product;
+        // CREATE UNIQUE INDEX uq_pos_batch_prod ON Positions(account_id, product_id, batch_id);
 
         jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
             @Override
@@ -127,22 +165,21 @@ public class PositionRepository {
                 ps.setInt(1, accountId);
                 ps.setInt(2, p.productId());
 
-                // Params for Quantity Logic
+                // Qty Logic
                 ps.setString(3, p.txnType());
                 ps.setBigDecimal(4, p.quantity());
                 ps.setBigDecimal(5, p.quantity());
 
-                // Param for Initial Cost (Avg Price)
+                // Cost Logic
                 ps.setBigDecimal(6, price);
-
-                // Params for Initial Total Cost Calculation
                 ps.setString(7, p.txnType());
                 ps.setBigDecimal(8, p.quantity());
                 ps.setBigDecimal(9, p.quantity());
                 ps.setBigDecimal(10, price);
 
-                // Param for Source
                 ps.setString(11, source);
+                ps.setInt(12, batchId);
+                ps.setInt(13, batchId); // For ON CONFLICT WHERE clause
             }
 
             @Override
@@ -152,18 +189,21 @@ public class PositionRepository {
         });
     }
 
-    // ... existing imports ...
-
-    // Add this method to handle incremental updates
+    /**
+     * Updates quantity for Trade Lifecycle (Amend/Cancel). Target ACTIVE batch.
+     */
     public void upsertPositionQuantity(Integer accountId, Integer productId, BigDecimal quantityDelta) {
         String sql = """
-            INSERT INTO Positions (account_id, product_id, quantity, source_system, updated_at)
-            VALUES (?, ?, ?, 'INTRADAY', CURRENT_TIMESTAMP)
-            ON CONFLICT (account_id, product_id)
-            DO UPDATE SET 
-                quantity = Positions.quantity + EXCLUDED.quantity,
-                updated_at = CURRENT_TIMESTAMP
-        """;
-        jdbcTemplate.update(sql, accountId, productId, quantityDelta);
+                    UPDATE Positions 
+                    SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE account_id = ? 
+                      AND product_id = ? 
+                      AND batch_id = (SELECT batch_id FROM Account_Batches WHERE account_id = ? AND status = 'ACTIVE')
+                """;
+        jdbcTemplate.update(sql, quantityDelta, accountId, productId, accountId);
+    }
+
+    // Legacy support (No-op in Blue/Green as we use cleanUpArchivedBatches)
+    public void deletePositionsByAccount(Integer accountId) {
     }
 }

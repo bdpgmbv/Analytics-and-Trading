@@ -6,31 +6,22 @@ package com.vyshali.hedgeservice.service;
  */
 
 import com.vyshali.hedgeservice.dto.HedgeExecutionRequestDTO;
+import com.vyshali.hedgeservice.fix.FixEngine;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
-
-import java.util.UUID;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class HedgeExecutionService {
 
-    private final KafkaTemplate<String, Object> kafkaTemplate;
-
-    // Topic that the downstream "FX Matrix" listens to
-    private static final String FX_MATRIX_TOPIC = "FX_MATRIX_ORDERS";
+    private final FixEngine fixEngine; // <--- Swapped KafkaTemplate for FixEngine
 
     public String executeHedge(HedgeExecutionRequestDTO request) {
-        String clOrdId = "HEDGE-" + UUID.randomUUID().toString().substring(0, 8);
+        log.info("Routing Hedge Order via FIX Engine: Pair={} Qty={}", request.currencyPair(), request.quantity());
 
-        log.info("Sending Hedge Order to FX Matrix: ID={} Pair={} Qty={}", clOrdId, request.currencyPair(), request.quantity());
-
-        // In a real system, you might convert this DTO to a FIX message string here
-        kafkaTemplate.send(FX_MATRIX_TOPIC, clOrdId, request);
-
-        return clOrdId;
+        // Delegate to the FIX Engine
+        return fixEngine.sendOrder(request);
     }
 }
