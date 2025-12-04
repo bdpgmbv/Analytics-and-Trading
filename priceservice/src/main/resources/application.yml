@@ -40,3 +40,9 @@ management:
     web:
       exposure:
         include: "health,metrics,prometheus"
+
+app:
+  sharding:
+    enabled: true
+    shard-id: ${SHARD_ID:0}       # Default to Shard 0
+    total-shards: ${TOTAL_SHARDS:1} # Default to 1 (No sharding)

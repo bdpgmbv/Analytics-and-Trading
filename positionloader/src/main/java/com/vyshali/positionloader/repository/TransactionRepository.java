@@ -28,17 +28,27 @@ public class TransactionRepository {
         jdbcTemplate.update("DELETE FROM Transactions WHERE account_id = ?", accountId);
     }
 
+    /**
+     * Looks up the quantity of a previously booked trade.
+     * Used for Reversals (Amend/Cancel).
+     */
+    public BigDecimal findQuantityByRefId(String externalRefId) {
+        String sql = "SELECT quantity FROM Transactions WHERE external_ref_id = ?";
+        try {
+            return jdbcTemplate.queryForObject(sql, BigDecimal.class, externalRefId);
+        } catch (Exception e) {
+            return BigDecimal.ZERO; // Or throw exception if strict
+        }
+    }
+
     public void batchInsertTransactions(Integer accountId, List<PositionDetailDTO> positions) {
-        // TIER 1 UPGRADE: Explicitly handle duplicate replay with ON CONFLICT
         String sql = """
                     INSERT INTO Transactions (
                         transaction_id, account_id, product_id, txn_type, 
                         trade_date, quantity, price, cost_local, 
                         external_ref_id, created_at
                     ) VALUES (
-                        nextval('position_seq'), 
-                        ?, ?, ?, ?, ?, ?, ?, ?, 
-                        CURRENT_TIMESTAMP
+                        nextval('position_seq'), ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
                     )
                     ON CONFLICT (external_ref_id) DO NOTHING 
                 """;
@@ -58,10 +68,7 @@ public class TransactionRepository {
                 ps.setBigDecimal(5, p.quantity());
                 ps.setBigDecimal(6, price);
                 ps.setBigDecimal(7, cost);
-
-                // CRITICAL FIX: Insert the unique ID provided by upstream
-                // If this is null (legacy data), we generate a fallback to avoid crash,
-                // though real prod should reject nulls.
+                // Handle legacy or null refIds
                 String refId = (p.externalRefId() != null) ? p.externalRefId() : "LEGACY-" + System.nanoTime() + "-" + i;
                 ps.setString(8, refId);
             }

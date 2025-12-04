@@ -21,18 +21,23 @@ dependencies {
     runtimeOnly("org.postgresql:postgresql")
     implementation("com.zaxxer:HikariCP")
 
-    // Internal Modules (Access to Shared Schema)
+    // Internal Modules
     implementation(project(":common"))
 
     // Security
     implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
 
+    // Observability
     implementation("io.micrometer:micrometer-registry-prometheus")
     implementation("io.micrometer:micrometer-tracing-bridge-brave")
     implementation("io.zipkin.reporter2:zipkin-reporter-brave")
 
-    // Add this dependency for KafkaTemplate
+    // Messaging
     implementation("org.springframework.kafka:spring-kafka")
+
+    // --- NEW: FIX ENGINE ---
+    implementation("org.quickfixj:quickfixj-core:2.3.1")
+    // -----------------------
 
     // Tools
     compileOnly("org.projectlombok:lombok")

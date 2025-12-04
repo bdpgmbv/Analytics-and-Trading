@@ -26,45 +26,46 @@ public class SnapshotService {
     private final MspmIntegrationService mspmService;
     private final ReferenceDataRepository refRepo;
     private final PositionRepository posRepo;
-    private final TransactionRepository txnRepo; // <--- NEW DEPENDENCY
+    private final TransactionRepository txnRepo;
     private final EodTrackerRepository trackerRepo;
     private final EventPublisherService eventPublisher;
-    private final ExposureEnrichmentService exposureService; // <--- INJECTED
+    private final ExposureEnrichmentService exposureService;
     private final MeterRegistry meterRegistry;
 
-    /**
-     * EOD Process:
-     * 1. Fetch Data
-     * 2. Upsert Reference Data
-     * 3. Wipe Transactions (History) & Positions (State)
-     * 4. Insert New Data
-     * 5. Track & Notify
-     */
     @Transactional(rollbackFor = Exception.class)
     public void processEodFromMspm(Integer accountId) {
         Timer.Sample sample = Timer.start(meterRegistry);
         try {
-            // 1. Fetch
+            // 1. Fetch Data
             AccountSnapshotDTO snapshot = mspmService.fetchEodSnapshot(accountId);
 
             // 2. Reference Data
             upsertReferenceData(snapshot);
 
-            // 3. Wipe Old Data
-            txnRepo.deleteTransactionsByAccount(accountId);
-            posRepo.deletePositionsByAccount(accountId);
+            // 3. BLUE/GREEN: Create Staging Batch
+            int newBatchId = posRepo.createNextBatch(accountId);
+            log.info("Started EOD Load for Account {}. Staging Batch: {}", accountId, newBatchId);
 
-            // 4. Load New Data
+            // 4. Load Data into Staging
             if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
-                posRepo.batchInsertPositions(accountId, snapshot.positions(), "MSPM_EOD");
-                txnRepo.batchInsertTransactions(accountId, snapshot.positions());
+                // Insert into the invisible 'STAGING' batch
+                posRepo.batchInsertPositions(accountId, snapshot.positions(), "MSPM_EOD", newBatchId);
 
-                // 5. ENRICHMENT (New Step)
-                // Calculate Specific/Generic exposures based on the new positions
-                exposureService.enrichSnapshot(accountId);
+                // Transactions are historical/append-only, so we record them directly
+                txnRepo.batchInsertTransactions(accountId, snapshot.positions());
             }
 
-            // 6. Complete
+            // 5. BLUE/GREEN: Atomic Flip
+            posRepo.activateBatch(accountId, newBatchId);
+            log.info("Activated Batch {} for Account {}", newBatchId, accountId);
+
+            // 6. Cleanup Old Data
+            posRepo.cleanUpArchivedBatches(accountId);
+
+            // 7. Enrichment (Calculates risk on the now-active positions)
+            exposureService.enrichSnapshot(accountId);
+
+            // 8. Sign-off & Notify
             LocalDate today = LocalDate.now();
             trackerRepo.markAccountComplete(accountId, snapshot.clientId(), today);
 
@@ -74,19 +75,12 @@ public class SnapshotService {
             if (trackerRepo.isClientFullyComplete(snapshot.clientId(), today)) {
                 eventPublisher.publishReportingSignOff(snapshot.clientId(), today);
             }
-            log.info("EOD Snapshot completed for Account {}", accountId);
 
         } finally {
             sample.stop(meterRegistry.timer("posloader.eod.duration"));
         }
     }
 
-    /**
-     * Intraday Process:
-     * 1. Upsert Reference Data
-     * 2. Incremental Update on Positions
-     * 3. Notify
-     */
     @Transactional(rollbackFor = Exception.class)
     public void processIntradayPayload(AccountSnapshotDTO snapshot) {
         Timer.Sample sample = Timer.start(meterRegistry);
@@ -94,11 +88,8 @@ public class SnapshotService {
             upsertReferenceData(snapshot);
 
             if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
-                // Update State (Add/Subtract logic)
+                // Incremental upsert finds the ACTIVE batch internally
                 posRepo.batchIncrementalUpsert(snapshot.accountId(), snapshot.positions(), "MSPA_INTRA");
-
-                // Optional: You could also insert into TransactionRepo here if you want granular history
-                // txnRepo.batchInsertTransactions(snapshot.accountId(), snapshot.positions());
             }
 
             int count = (snapshot.positions() == null) ? 0 : snapshot.positions().size();
@@ -109,33 +100,35 @@ public class SnapshotService {
         }
     }
 
+    @Transactional
+    public void processTradeEvent(TradeEventDTO trade) {
+        log.info("Processing Lifecycle Event: {} for Account {}", trade.eventType(), trade.accountId());
+        for (var pos : trade.positions()) {
+            Integer productId = pos.productId();
+            BigDecimal quantityDelta = pos.quantity();
+
+            if ("CANCEL".equalsIgnoreCase(trade.eventType())) {
+                quantityDelta = quantityDelta.negate();
+            } else if ("AMEND".equalsIgnoreCase(trade.eventType())) {
+                BigDecimal originalQty = txnRepo.findQuantityByRefId(trade.originalRefId());
+                posRepo.upsertPositionQuantity(trade.accountId(), productId, originalQty.negate());
+            }
+
+            if ("SELL".equalsIgnoreCase(pos.txnType())) {
+                quantityDelta = quantityDelta.negate();
+            }
+
+            // Updates the ACTIVE batch
+            posRepo.upsertPositionQuantity(trade.accountId(), productId, quantityDelta);
+        }
+    }
+
     private void upsertReferenceData(AccountSnapshotDTO snapshot) {
         refRepo.ensureClientExists(snapshot.clientId(), snapshot.clientName());
         refRepo.ensureFundExists(snapshot.fundId(), snapshot.clientId(), snapshot.fundName(), snapshot.baseCurrency());
         refRepo.upsertAccount(snapshot.accountId(), snapshot.fundId(), snapshot.accountNumber(), snapshot.accountType());
-
         if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
             refRepo.batchUpsertProducts(snapshot.positions());
-        }
-    }
-
-    // ... existing imports ...
-
-    @Transactional
-    public void processTradeEvent(TradeEventDTO trade) {
-        for (var pos : trade.positions()) {
-            // Simple lookup (In real app, query ReferenceDataRepo)
-            // Hardcoding ID for demo flow to ensure it works without complex lookup logic
-            Integer productId = 1001; // Mock Product ID for EURUSD
-
-            // Handle Side (Sell = Negative Quantity)
-            BigDecimal qty = pos.quantity();
-            if ("SELL".equalsIgnoreCase(pos.txnType())) {
-                qty = qty.negate();
-            }
-
-            posRepo.upsertPositionQuantity(trade.accountId(), productId, qty);
-            log.info("DB UPDATED: Account {} Product {} Delta {}", trade.accountId(), productId, qty);
         }
     }
 }
