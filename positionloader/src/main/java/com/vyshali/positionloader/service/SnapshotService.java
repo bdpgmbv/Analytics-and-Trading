@@ -116,4 +116,24 @@ public class SnapshotService {
             refRepo.batchUpsertProducts(snapshot.positions());
         }
     }
+
+    // ... existing imports ...
+
+    @Transactional
+    public void processTradeEvent(TradeEventDTO trade) {
+        for (var pos : trade.positions()) {
+            // Simple lookup (In real app, query ReferenceDataRepo)
+            // Hardcoding ID for demo flow to ensure it works without complex lookup logic
+            Integer productId = 1001; // Mock Product ID for EURUSD
+
+            // Handle Side (Sell = Negative Quantity)
+            BigDecimal qty = pos.quantity();
+            if ("SELL".equalsIgnoreCase(pos.txnType())) {
+                qty = qty.negate();
+            }
+
+            posRepo.upsertPositionQuantity(trade.accountId(), productId, qty);
+            log.info("DB UPDATED: Account {} Product {} Delta {}", trade.accountId(), productId, qty);
+        }
+    }
 }

@@ -23,28 +23,27 @@ public class FxMatrixListener {
 
     private final KafkaPublisherService publisher;
 
-    // Listens for orders sent by HedgeService
+    // Step 2: Listen for the Order
     @KafkaListener(topics = "FX_MATRIX_ORDERS", groupId = "mock-matrix-group")
     public void onHedgeOrder(ConsumerRecord<String, String> record) {
         String clOrdId = record.key();
-        log.info("FX MATRIX received Order ID: {}. Processing...", clOrdId);
+        log.info("EXCHANGE: Received Order {}", clOrdId);
 
-        // 1. Simulate Latency
+        // Simulate processing time
         try {
             Thread.sleep(500);
         } catch (InterruptedException e) {
         }
 
-        // 2. Create Dummy Execution Report (Simulating a Fill)
-        // In a real mock, you would parse the JSON value to match Qty/Ticker
-        ExecutionReportDTO fill = new ExecutionReportDTO(clOrdId, "EXEC-MX-" + UUID.randomUUID().toString().substring(0, 6), 1001, // Dummy Account
-                "EURUSD", // Dummy Ticker
-                "BUY", new BigDecimal("100000"), // Dummy Qty
-                new BigDecimal("1.0550"), // Execution Price
-                "FILLED", "FX_MATRIX_PROD");
+        // Step 3: Generate a FILL (Execution Report)
+        // Hardcoded for demo: Buying 1000 EURUSD
+        ExecutionReportDTO fill = new ExecutionReportDTO(clOrdId, "EXEC-" + UUID.randomUUID().toString().substring(0, 6), 1001,       // Hardcoded Account for demo
+                "EURUSD", "BUY", new BigDecimal("1000"), // Qty Filled
+                new BigDecimal("1.0550"), // Price
+                "FILLED", "FX_MATRIX");
 
-        // 3. Send back to TradeFillProcessor
+        // Send back to TradeFillProcessor
         publisher.sendExecutionReport(fill);
-        log.info("FX MATRIX executed Order {}. Fill sent to TradeFillProcessor.", clOrdId);
+        log.info("EXCHANGE: Filled Order {}", clOrdId);
     }
 }
