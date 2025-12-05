@@ -41,7 +41,7 @@ public class OpsController {
     // 1. THE MAKER (User A initiates the Request)
     // ==========================================================
     @PostMapping("/eod/{accountId}")
-    @PreAuthorize("hasAuthority('SCOPE_fxan.ops.write')")
+    @PreAuthorize("hasPermission(#accountId, 'TRIGGER_EOD')")
     public ResponseEntity<String> requestEod(@PathVariable Integer accountId, Authentication auth) {
         String makerName = getName(auth);
         String requestId = "REQ-" + UUID.randomUUID().toString().substring(0, 8);
