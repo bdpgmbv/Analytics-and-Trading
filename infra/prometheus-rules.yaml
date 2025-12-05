@@ -1,0 +1,32 @@
+groups:
+  - name: trading-platform-alerts
+    rules:
+      # 1. DLQ Monitor (The one we built code for)
+      - alert: DeadLetterQueueNotEmpty
+        expr: kafka_dlq_depth > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Intraday Processing Blocked"
+          description: "MSPA Intraday DLQ has {{ $value }} messages. Run /api/ops/dlq/replay after fixing the bug."
+
+      # 2. High Error Rate (Circuit Breaker Trip)
+      - alert: UpstreamMspmDown
+        expr: resilience4j_circuitbreaker_state{name="mspm-service", state="open"} == 1
+        for: 10s
+        labels:
+          severity: warning
+        annotations:
+          summary: "MSPM Upstream Circuit Open"
+          description: "EOD Snapshot fetch is failing. Circuit breaker is OPEN."
+
+      # 3. Slow Pricing (Performance Degradation)
+      - alert: ValuationLagging
+        expr: rate(valuation_batch_processing_seconds_sum[1m]) / rate(valuation_batch_processing_seconds_count[1m]) > 0.5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pricing Latency High"
+          description: "Valuation Service is taking > 500ms per batch. Consider scaling up replicas."
