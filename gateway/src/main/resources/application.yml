@@ -4,18 +4,30 @@ server:
 spring:
   application:
     name: gateway
+  data:
+    redis:
+      host: redis
+      port: 6379
+
   security:
     oauth2:
       resourceserver:
         jwt:
-          # Validate tokens against Keycloak
           issuer-uri: ${KEYCLOAK_URI:http://localhost:8180}/realms/trading-realm
           jwk-set-uri: ${KEYCLOAK_URI:http://localhost:8180}/realms/trading-realm/protocol/openid-connect/certs
 
   cloud:
     gateway:
       default-filters:
-        - TokenRelay # Pass the JWT to downstream services
+        - TokenRelay
+        # THE SHIELD: Global Rate Limit (100 req/sec per user)
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter.replenishRate: 100
+            redis-rate-limiter.burstCapacity: 200
+            redis-rate-limiter.requestedTokens: 1
+            key-resolver: "#{@userKeyResolver}"
+
       routes:
         - id: position-loader
           uri: http://positionloader:8080
@@ -41,10 +53,10 @@ logging:
 management:
   tracing:
     sampling:
-      probability: 1.0 # Log 100% of requests (for dev/demo only)
+      probability: 1.0
   zipkin:
     tracing:
-      endpoint: http://tempo:9411/api/v2/spans # Send traces to Tempo container
+      endpoint: http://tempo:9411/api/v2/spans
   endpoints:
     web:
       exposure:
