@@ -1,7 +1,17 @@
+# Global settings
 replicaCount: 2
+
 image:
   repository: my-registry/positionloader
   tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+  # NEW: FIX Port for HedgeService (if using this chart template generically)
+  fixPort: 9898
+
 resources:
   requests:
     memory: "512Mi"
@@ -9,5 +19,22 @@ resources:
   limits:
     memory: "1Gi"
     cpu: "1000m"
+
+# Environment Variables injected into the Pod
 env:
   SPRING_PROFILES_ACTIVE: "prod"
+
+  # SHARDING CONFIG (Tier 1 Requirement)
+  # In K8s, we usually use a StatefulSet or downstream logic to assign IDs.
+  # Here we set defaults that can be overridden per replica.
+  TOTAL_SHARDS: "2"
+
+  # Feature Flags
+  FEATURE_BITEMPORAL: "true"
+  FEATURE_MAKER_CHECKER: "true"
+
+# Vault Configuration for Secrets
+vault:
+  enabled: true
+  role: "positionloader-role"
+  path: "secret/data/trading/db"

@@ -4,10 +4,17 @@
             <includeContext>true</includeContext>
         </encoder>
     </appender>
+
     <appender name="CONSOLE_PRETTY" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder><pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern></encoder>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] [%X{traceId},%X{spanId}] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
     </appender>
 
-    <springProfile name="prod"><root level="INFO"><appender-ref ref="CONSOLE_JSON"/></root></springProfile>
-    <springProfile name="!prod"><root level="INFO"><appender-ref ref="CONSOLE_PRETTY"/></root></springProfile>
+    <springProfile name="prod">
+        <root level="INFO"><appender-ref ref="CONSOLE_JSON"/></root>
+    </springProfile>
+    <springProfile name="!prod">
+        <root level="INFO"><appender-ref ref="CONSOLE_PRETTY"/></root>
+    </springProfile>
 </configuration>
