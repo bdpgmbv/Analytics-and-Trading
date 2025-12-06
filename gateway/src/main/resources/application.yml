@@ -4,10 +4,18 @@ server:
 spring:
   application:
     name: gateway
+
   data:
     redis:
       host: redis
       port: 6379
+      # PRODUCTION UPGRADE: Redis Connection Pooling
+      # Prevents the Gateway from running out of connections under heavy load.
+      lettuce:
+        pool:
+          max-active: 50
+          max-idle: 10
+          max-wait: 500ms
 
   security:
     oauth2:
@@ -18,8 +26,33 @@ spring:
 
   cloud:
     gateway:
+      # GAP 1: CORS CONFIGURATION
+      # Allows your Frontend (React/Angular) to talk to this API without browser blocking.
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins: "https://trade.morganstanley.com", "http://localhost:3000"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowedHeaders:
+              - Authorization
+              - Content-Type
+              - App-ID
+            allowCredentials: true
+
+      # GAP 2: HTTP TIMEOUTS
+      # Fails fast (5s) instead of hanging forever if a backend service freezes.
+      httpclient:
+        connect-timeout: 1000
+        response-timeout: 5s
+
       default-filters:
         - TokenRelay
+
         # THE SHIELD: Global Rate Limit (100 req/sec per user)
         - name: RequestRateLimiter
           args:
@@ -28,19 +61,44 @@ spring:
             redis-rate-limiter.requestedTokens: 1
             key-resolver: "#{@userKeyResolver}"
 
+        # GAP 3: RETRY LOGIC
+        # Automatically retries failed GET requests (e.g., network blips) up to 3 times.
+        - name: Retry
+          args:
+            retries: 3
+            methods: GET
+            backoff:
+              firstBackoff: 50ms
+              maxBackoff: 500ms
+
       routes:
         - id: position-loader
           uri: http://positionloader:8080
           predicates:
             - Path=/api/loader/**
+          # GAP 3: CIRCUIT BREAKER
+          # If positionloader fails >50%, stop sending traffic and return "Service Unavailable" instantly.
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: loaderCircuitBreaker
+                fallbackUri: forward:/fallback/loader
+
         - id: hedge-service
           uri: http://hedgeservice:8080
           predicates:
             - Path=/api/hedge/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: hedgeCircuitBreaker
+                fallbackUri: forward:/fallback/hedge
+
         - id: price-service-ws
           uri: ws://priceservice:8080
           predicates:
             - Path=/ws-market-data/**
+
         - id: trade-processor
           uri: http://tradefillprocessor:8080
           predicates:
@@ -49,6 +107,7 @@ spring:
 logging:
   level:
     org.springframework.cloud.gateway: INFO
+    io.github.resilience4j: INFO # Monitor Circuit Breaker state changes
 
 management:
   tracing:
