@@ -5,17 +5,17 @@ package com.vyshali.mockupstream.dto;
  * @author Vyshali Prabananth Lal
  */
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+
 import java.math.BigDecimal;
 
-// This DTO represents a "Fill" message sent from the Exchange
-public record ExecutionReportDTO(String orderId,     // The Client's Order ID (e.g. "ORD-101")
-                                 String execId,      // The Exchange's Execution ID (e.g. "EXEC-99")
-                                 Integer accountId,  // Which account bought it
-                                 String ticker,      // "AAPL"
-                                 String side,        // "BUY" or "SELL"
-                                 BigDecimal lastQty, // Quantity of THIS specific fill (e.g. 100)
-                                 BigDecimal lastPx,  // Price of THIS specific fill (e.g. 150.50)
-                                 String status,      // "PARTIALLY_FILLED" or "FILLED"
-                                 String venue        // "NYSE", "NASDAQ"
-) {
+public record ExecutionReportDTO(@NotBlank(message = "Execution ID is mandatory") String execID,
+
+                                 @NotBlank String orderID, @NotBlank String symbol, @NotBlank String side,
+
+                                 @NotNull @Positive BigDecimal lastQty,
+
+                                 @NotNull @Positive BigDecimal lastPx) {
 }
