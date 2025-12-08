@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   # ==========================================
-  # 1. THE FRONT DOOR (Gateway)
+  # 1. THE GATEWAY (Entry Point)
   # ==========================================
   gateway:
     build:
@@ -12,6 +12,7 @@ services:
     environment:
       - SPRING_PROFILES_ACTIVE=docker
       - KEYCLOAK_URI=http://keycloak:8080
+      - REDIS_HOST=redis
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
     depends_on:
       - keycloak
@@ -22,8 +23,92 @@ services:
       - redis
 
   # ==========================================
-  # 2. IDENTITY & SECURITY (Keycloak)
+  # 2. CORE SERVICES
   # ==========================================
+  positionloader:
+    build:
+      context: ./positionloader
+    container_name: positionloader
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      # SECRET INJECTION: In Prod, this variable comes from Vault/K8s Secrets
+      DB_PASSWORD: ${DB_PASSWORD:-password}
+      UPSTREAM_MSPM_BASE_URL: http://mock-upstream:8081/mspm
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+    depends_on: [postgres, kafka]
+
+  hedgeservice:
+    build:
+      context: ./hedgeservice
+    container_name: hedgeservice
+    ports: ["9898:9898"] # Expose FIX port for external engines
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      DB_PASSWORD: ${DB_PASSWORD:-password}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+    volumes:
+      # PERFECTION: Persist FIX logs to host so we don't lose legal audit trails on crash
+      - ./logs/fix:/target/data/quickfix/log
+    depends_on: [postgres, kafka]
+
+  priceservice:
+    build:
+      context: ./priceservice
+    container_name: priceservice
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_DATA_REDIS_HOST: redis
+      DB_PASSWORD: ${DB_PASSWORD:-password}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+      # Sharding Config
+      SHARD_ID: 0
+      TOTAL_SHARDS: 1
+    depends_on: [postgres, kafka, redis]
+
+  tradefillprocessor:
+    build:
+      context: ./tradefillprocessor
+    container_name: tradefillprocessor
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_DATA_REDIS_HOST: redis
+      DB_PASSWORD: ${DB_PASSWORD:-password}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+    depends_on: [postgres, kafka, redis]
+
+  mock-upstream:
+    build:
+      context: ./mock-upstream
+    container_name: mock-upstream
+    ports: ["8081:8081"]
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+    depends_on: [kafka]
+
+  # ==========================================
+  # 3. INFRASTRUCTURE & OBSERVABILITY
+  # ==========================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading-db
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: analyticsandtrading
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    ports: ["6379:6379"]
+
   keycloak:
     image: quay.io/keycloak/keycloak:23.0.0
     container_name: auth-server
@@ -35,28 +120,6 @@ services:
     volumes:
       - ./infra/keycloak-realm.json:/opt/keycloak/data/import/realm.json:ro
 
-  # ==========================================
-  # 3. DATA LAYER (Postgres & Redis)
-  # ==========================================
-  postgres:
-    image: postgres:15-alpine
-    container_name: trading-db
-    ports: ["5432:5432"]
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: analyticsandtrading
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
-    container_name: trading-redis
-    ports: ["6379:6379"]
-
-  # ==========================================
-  # 4. MESSAGING (Kafka)
-  # ==========================================
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     container_name: zookeeper
@@ -78,9 +141,6 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
 
-  # ==========================================
-  # 5. OBSERVABILITY
-  # ==========================================
   tempo:
     image: grafana/tempo:2.3.1
     container_name: tempo
@@ -94,7 +154,7 @@ services:
     container_name: prometheus
     volumes:
       - ./infra/prometheus.yaml:/etc/prometheus/prometheus.yml
-      # MOUNT THE NEW RULES FILE
+      # Mount the Alert Rules so Prometheus can see them
       - ./infra/prometheus-rules.yaml:/etc/prometheus/prometheus-rules.yaml
     ports: ["9090:9090"]
 
@@ -106,65 +166,6 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
     ports: ["3000:3000"]
     depends_on: [prometheus, tempo]
-
-  # ==========================================
-  # 6. APPLICATION SERVICES
-  # ==========================================
-  mock-upstream:
-    build:
-      context: ./mock-upstream
-    container_name: mock-upstream
-    ports: ["8081:8081"]
-    environment:
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
-    depends_on: [kafka]
-
-  positionloader:
-    build:
-      context: ./positionloader
-    container_name: positionloader
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      UPSTREAM_MSPM_BASE_URL: http://mock-upstream:8081/mspm
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
-    depends_on: [postgres, kafka]
-
-  priceservice:
-    build:
-      context: ./priceservice
-    container_name: priceservice
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      SPRING_DATA_REDIS_HOST: redis
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
-      SHARD_ID: 0
-      TOTAL_SHARDS: 1
-    depends_on: [postgres, kafka, redis]
-
-  hedgeservice:
-    build:
-      context: ./hedgeservice
-    container_name: hedgeservice
-    ports: ["9898:9898"]
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
-    depends_on: [postgres, kafka]
-
-  tradefillprocessor:
-    build:
-      context: ./tradefillprocessor
-    container_name: tradefillprocessor
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/analyticsandtrading
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      SPRING_DATA_REDIS_HOST: redis
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
-    depends_on: [postgres, kafka, redis]
 
 volumes:
   pgdata:

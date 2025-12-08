@@ -4,20 +4,16 @@ server:
 spring:
   application:
     name: gateway
-
-  # 1. REDIS CONFIGURATION (For Rate Limiting)
   data:
     redis:
-      host: redis
+      host: ${REDIS_HOST:redis}
       port: 6379
-      # Production Tuning: Connection Pooling prevents resource exhaustion
       lettuce:
         pool:
           max-active: 50
           max-idle: 10
           max-wait: 500ms
 
-  # 2. SECURITY CONFIGURATION (Keycloak)
   security:
     oauth2:
       resourceserver:
@@ -27,102 +23,57 @@ spring:
 
   cloud:
     gateway:
-      # 3. CORS CONFIGURATION (Frontend Connectivity)
-      # Critical for React/Angular apps to talk to this API
       globalcors:
         cors-configurations:
           '[/**]':
             allowedOrigins: "https://trade.morganstanley.com", "http://localhost:3000"
-            allowedMethods:
-              - GET
-              - POST
-              - PUT
-              - DELETE
-              - OPTIONS
-            allowedHeaders:
-              - Authorization
-              - Content-Type
-              - App-ID
+            allowedMethods: [GET, POST, PUT, DELETE, OPTIONS]
+            allowedHeaders: [Authorization, Content-Type, App-ID]
             allowCredentials: true
 
-      # 4. HTTP TIMEOUTS (Stability)
-      # Fail fast if a backend is slow/hanging
       httpclient:
-        connect-timeout: 1000 # 1s to connect
-        response-timeout: 5s  # 5s to wait for response
+        connect-timeout: 1000
+        response-timeout: 5s
 
-      # 5. DEFAULT FILTERS (Applied to ALL routes)
       default-filters:
-        - TokenRelay # Pass the JWT to the microservices
-
-        # Global Rate Limiter: 100 req/sec per user
+        - TokenRelay
         - name: RequestRateLimiter
           args:
             redis-rate-limiter.replenishRate: 100
             redis-rate-limiter.burstCapacity: 200
-            redis-rate-limiter.requestedTokens: 1
-            key-resolver: "#{@userKeyResolver}" # Defined in Java config
-
-        # Global Retry: If GET fails, try 3 times
+            key-resolver: "#{@userKeyResolver}"
         - name: Retry
-          args:
-            retries: 3
-            methods: GET
-            backoff:
-              firstBackoff: 50ms
-              maxBackoff: 500ms
+          args: { retries: 3, methods: GET }
 
-      # 6. ROUTING TABLE
       routes:
-        # Route 1: Position Loader (Critical Data)
         - id: position-loader
           uri: http://positionloader:8080
-          predicates:
-            - Path=/api/loader/**
+          predicates: [ Path=/api/loader/** ]
           filters:
             - name: CircuitBreaker
-              args:
-                name: loaderCircuitBreaker
-                fallbackUri: forward:/fallback/loader
+              args: { name: loaderCircuitBreaker, fallbackUri: forward:/fallback/loader }
 
-        # Route 2: Hedge Service (Trading)
         - id: hedge-service
           uri: http://hedgeservice:8080
-          predicates:
-            - Path=/api/hedge/**
+          predicates: [ Path=/api/hedge/** ]
           filters:
             - name: CircuitBreaker
-              args:
-                name: hedgeCircuitBreaker
-                fallbackUri: forward:/fallback/hedge
+              args: { name: hedgeCircuitBreaker, fallbackUri: forward:/fallback/hedge }
 
-        # Route 3: Price Service (WebSockets)
         - id: price-service-ws
           uri: ws://priceservice:8080
-          predicates:
-            - Path=/ws-market-data/**
+          predicates: [ Path=/ws-market-data/** ]
 
-        # Route 4: Trade Processor (History)
         - id: trade-processor
           uri: http://tradefillprocessor:8080
-          predicates:
-            - Path=/api/trades/**
+          predicates: [ Path=/api/trades/** ]
 
-# 7. OBSERVABILITY LOGGING
-logging:
-  level:
-    org.springframework.cloud.gateway: INFO
-    org.springframework.security: INFO
-    io.github.resilience4j: INFO # See when circuit breakers open/close
-
+# SECURITY: Lockdown Management Endpoints
 management:
-  tracing:
-    sampling:
-      probability: 1.0
-  zipkin:
-    tracing:
-      endpoint: http://tempo:9411/api/v2/spans
   endpoints:
     web:
       exposure:
-        include: "health,metrics,prometheus"
+        include: "health,metrics,prometheus" # Block 'env', 'heapdump', 'beans'
+  endpoint:
+    health:
+      show-details: when_authorized # Only admins see full stack traces

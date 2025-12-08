@@ -19,27 +19,18 @@ public class PriceCacheService {
     private final RedisTemplate<String, PriceTickDTO> redisTemplate;
     private static final String KEY_PREFIX = "PRICE:";
 
-    /**
-     * Updates Redis with the latest tick.
-     */
     public void updatePrice(PriceTickDTO tick) {
+        // PERFECTION: Set TTL to 24 hours.
+        // If a stock is delisted or the system restarts, we don't want stale data forever.
         redisTemplate.opsForValue().set(KEY_PREFIX + tick.productId(), tick, Duration.ofHours(24));
     }
 
-    /**
-     * Fetches the latest effective price from Redis.
-     */
     public PriceTickDTO getPrice(Integer productId) {
         return redisTemplate.opsForValue().get(KEY_PREFIX + productId);
     }
 
-    /**
-     * NEW METHOD: Retrieves asset class from the cached tick.
-     * Used by ValuationService to select the correct pricing strategy.
-     */
     public String getAssetClass(Integer productId) {
         PriceTickDTO tick = getPrice(productId);
-        // Default to EQUITY if missing or not yet cached, to prevent NPE in strategies
         return (tick != null && tick.assetClass() != null) ? tick.assetClass() : "EQUITY";
     }
 }

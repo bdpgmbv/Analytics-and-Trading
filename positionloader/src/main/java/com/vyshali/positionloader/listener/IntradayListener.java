@@ -5,13 +5,13 @@ package com.vyshali.positionloader.listener;
  * @author Vyshali Prabananth Lal
  */
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vyshali.positionloader.dto.TradeEventDTO;
 import com.vyshali.positionloader.service.SnapshotService;
+import jakarta.validation.Valid; // Import this
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
 @Slf4j
@@ -20,16 +20,12 @@ import org.springframework.stereotype.Component;
 public class IntradayListener {
 
     private final SnapshotService snapshotService;
-    private final ObjectMapper objectMapper;
 
     @KafkaListener(topics = "MSPA_INTRADAY", groupId = "loader-group")
-    public void onTradeEvent(ConsumerRecord<String, String> record) {
-        try {
-            TradeEventDTO trade = objectMapper.readValue(record.value(), TradeEventDTO.class);
-            log.info("LOADER: Received Trade for Account {}. Updating DB...", trade.accountId());
-            snapshotService.processTradeEvent(trade);
-        } catch (Exception e) {
-            log.error("Error processing trade event", e);
-        }
+    public void onTradeEvent(@Payload @Valid TradeEventDTO event) {
+        // @Valid checks the DTO before this method runs.
+        // If invalid, it throws an exception and the message goes to the DLQ (handled by framework).
+        log.info("Received Validated Trade Event: {}", event.transactionId());
+        snapshotService.processTradeEvent(event);
     }
 }
