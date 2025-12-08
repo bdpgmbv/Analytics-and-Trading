@@ -4,15 +4,12 @@ package com.vyshali.priceservice.listener;
  * 12/02/2025 - 6:48 PM
  * @author Vyshali Prabananth Lal
  */
-/*
- * Updated to use Symbology Service for ID Resolution
- */
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vyshali.priceservice.dto.PriceTickDTO;
 import com.vyshali.priceservice.service.PriceCacheService;
 import com.vyshali.priceservice.service.PricePersistenceService;
-import com.vyshali.priceservice.service.SymbologyService; // <--- NEW IMPORT
+import com.vyshali.priceservice.service.SymbologyService;
 import com.vyshali.priceservice.service.ValuationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,7 +28,7 @@ public class MarketDataListener {
     private final PriceCacheService priceCache;
     private final PricePersistenceService persistenceService;
     private final ValuationService valuationService;
-    private final SymbologyService symbologyService; // <--- INJECTED
+    private final SymbologyService symbologyService;
     private final ObjectMapper objectMapper;
 
     @KafkaListener(topics = "MARKET_DATA_TICKS", groupId = "prices-group", containerFactory = "batchFactory")
@@ -40,26 +37,21 @@ public class MarketDataListener {
             try {
                 PriceTickDTO tick = objectMapper.readValue(record.value(), PriceTickDTO.class);
 
-                // 1. SYMBOLOGY RESOLUTION (The "Bank" Way)
-                // Market Data feeds usually provide a Ticker/ISIN. We need the Internal ID.
-                Integer internalId = tick.productId(); // Default if logic fails
+                // 1. SYMBOLOGY RESOLUTION (Using Optional)
+                Integer internalId = tick.productId();
 
                 if (tick.ticker() != null) {
-                    Integer resolvedId = symbologyService.resolveTicker(tick.ticker());
-                    if (resolvedId != null) {
-                        internalId = resolvedId;
-                    }
+                    internalId = symbologyService.resolveTicker(tick.ticker())
+                            .orElse(tick.productId()); // Fallback to raw ID if resolution fails
                 }
 
-                // 2. Update State (Redis) using the Stable ID
-                // Note: You might need to reconstruct the DTO with the resolved ID if downstream needs it.
-                // For now, we update cache with existing DTO but notify valuation logic using internalId.
+                // 2. Update State
                 priceCache.updatePrice(tick);
 
-                // 3. Queue for DB (Throttled)
+                // 3. Queue for DB
                 persistenceService.markDirty(internalId);
 
-                // 4. Trigger Server-Side Calculation (Reverse Index -> Math -> Conflation)
+                // 4. Trigger Calculation
                 valuationService.recalculateAndPush(internalId);
 
             } catch (Exception e) {

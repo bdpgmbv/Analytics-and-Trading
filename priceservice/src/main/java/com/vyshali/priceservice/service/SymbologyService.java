@@ -7,8 +7,11 @@ package com.vyshali.priceservice.service;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -21,14 +24,13 @@ public class SymbologyService {
      * Cached because Security Master data rarely changes intraday.
      */
     @Cacheable("symbology")
-    public Integer resolveTicker(String ticker) {
-        // Simple query. In prod, you'd join across ISIN/CUSIP too.
+    public Optional<Integer> resolveTicker(String ticker) {
         String sql = "SELECT internal_id FROM Security_Master WHERE ticker = ?";
         try {
-            return jdbcTemplate.queryForObject(sql, Integer.class, ticker);
-        } catch (Exception e) {
-            // Return null or throw custom exception if ticker unknown
-            return null;
+            Integer id = jdbcTemplate.queryForObject(sql, Integer.class, ticker);
+            return Optional.ofNullable(id);
+        } catch (EmptyResultDataAccessException e) {
+            return Optional.empty(); // Cleanly handle not found
         }
     }
 }

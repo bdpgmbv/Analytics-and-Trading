@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 9898 # Updated to match Docker Compose
 
 spring:
   application:
@@ -15,13 +15,13 @@ spring:
   cache:
     type: redis
     redis:
-      time-to-live: 10m # Auto-expire cache after 10 mins as a safety net
+      time-to-live: 10m
   # --------------------
 
   datasource:
     url: jdbc:postgresql://localhost:5432/analyticsandtrading
-    username: ${DB_USER:postgres}
-    password: ${DB_PASS:password}
+    username: ${DB_USER} # Removed insecure default
+    password: ${DB_PASS} # Removed insecure default
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 20

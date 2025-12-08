@@ -6,19 +6,22 @@ package com.vyshali.positionloader.service;
  */
 
 import com.vyshali.positionloader.dto.AccountSnapshotDTO;
-import com.vyshali.positionloader.dto.PositionChangeDTO; // <--- NEW
+import com.vyshali.positionloader.dto.PositionChangeDTO;
 import com.vyshali.positionloader.dto.TradeEventDTO;
+import com.vyshali.positionloader.dto.PositionDetailDTO;
+import com.vyshali.positionloader.mapper.SnapshotMapper; // <--- NEW
 import com.vyshali.positionloader.repository.*;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.kafka.core.KafkaTemplate; // <--- NEW
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 @Slf4j
 @Service
@@ -33,22 +36,26 @@ public class SnapshotService {
     private final EventPublisherService eventPublisher;
     private final ExposureEnrichmentService exposureService;
     private final MeterRegistry meterRegistry;
+    private final SnapshotMapper mapper; // <--- NEW: Decoupling Mapper
 
-    // Inject Kafka to send granular updates
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
     @Transactional(rollbackFor = Exception.class)
     public void processEodFromMspm(Integer accountId) {
-        // (Keep existing EOD logic: fetch, blue/green load, flip, enrich, notify)
         Timer.Sample sample = Timer.start(meterRegistry);
         try {
             AccountSnapshotDTO snapshot = mspmService.fetchEodSnapshot(accountId);
+
+            // 1. Sanitize Data using Mapper (Decoupling)
+            List<PositionDetailDTO> cleanPositions = mapper.sanitizeList(snapshot.positions());
+
             upsertReferenceData(snapshot);
 
             int newBatchId = posRepo.createNextBatch(accountId);
-            if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
-                posRepo.batchInsertPositions(accountId, snapshot.positions(), "MSPM_EOD", newBatchId);
-                txnRepo.batchInsertTransactions(accountId, snapshot.positions());
+            if (cleanPositions != null && !cleanPositions.isEmpty()) {
+                // Use Clean Positions
+                posRepo.batchInsertPositions(accountId, cleanPositions, "MSPM_EOD", newBatchId);
+                txnRepo.batchInsertTransactions(accountId, cleanPositions);
             }
             posRepo.activateBatch(accountId, newBatchId);
             posRepo.cleanUpArchivedBatches(accountId);
@@ -56,7 +63,7 @@ public class SnapshotService {
 
             LocalDate today = LocalDate.now();
             trackerRepo.markAccountComplete(accountId, snapshot.clientId(), today);
-            eventPublisher.publishChangeEvent(accountId, snapshot.clientId(), (snapshot.positions() != null ? snapshot.positions().size() : 0), "EOD_COMPLETE");
+            eventPublisher.publishChangeEvent(accountId, snapshot.clientId(), (cleanPositions != null ? cleanPositions.size() : 0), "EOD_COMPLETE");
 
             if (trackerRepo.isClientFullyComplete(snapshot.clientId(), today)) {
                 eventPublisher.publishReportingSignOff(snapshot.clientId(), today);
@@ -68,14 +75,14 @@ public class SnapshotService {
 
     @Transactional(rollbackFor = Exception.class)
     public void processIntradayPayload(AccountSnapshotDTO snapshot) {
-        // (Keep existing intraday batch logic)
         upsertReferenceData(snapshot);
-        if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
-            posRepo.batchIncrementalUpsert(snapshot.accountId(), snapshot.positions(), "MSPA_INTRA");
+
+        List<PositionDetailDTO> cleanPositions = mapper.sanitizeList(snapshot.positions());
+
+        if (cleanPositions != null && !cleanPositions.isEmpty()) {
+            posRepo.batchIncrementalUpsert(snapshot.accountId(), cleanPositions, "MSPA_INTRA");
         }
-        // Note: For full consistency, we should also emit granular events here,
-        // but for this demo we focus on the TradeEvent flow below.
-        eventPublisher.publishChangeEvent(snapshot.accountId(), snapshot.clientId(), (snapshot.positions() != null ? snapshot.positions().size() : 0), "INTRADAY_UPDATE");
+        eventPublisher.publishChangeEvent(snapshot.accountId(), snapshot.clientId(), (cleanPositions != null ? cleanPositions.size() : 0), "INTRADAY_UPDATE");
     }
 
     @Transactional
@@ -85,7 +92,6 @@ public class SnapshotService {
             Integer productId = pos.productId();
             BigDecimal quantityDelta = pos.quantity();
 
-            // 1. Lifecycle Logic
             if ("CANCEL".equalsIgnoreCase(trade.eventType())) {
                 quantityDelta = quantityDelta.negate();
             } else if ("AMEND".equalsIgnoreCase(trade.eventType())) {
@@ -97,14 +103,10 @@ public class SnapshotService {
                 quantityDelta = quantityDelta.negate();
             }
 
-            // 2. Update DB
             posRepo.upsertPositionQuantity(trade.accountId(), productId, quantityDelta);
 
-            // 3. FETCH NEW STATE (For Cache Consistency)
             BigDecimal newTotalQty = posRepo.getPositionQuantity(trade.accountId(), productId);
 
-            // 4. PUBLISH GRANULAR EVENT (The "Feedback Loop")
-            // This ensures Price Service gets the exact new quantity to re-value.
             PositionChangeDTO changeEvent = new PositionChangeDTO(trade.accountId(), productId, newTotalQty);
             kafkaTemplate.send("POSITION_CHANGE_EVENTS", trade.accountId().toString(), changeEvent);
 
@@ -116,6 +118,7 @@ public class SnapshotService {
         refRepo.ensureClientExists(snapshot.clientId(), snapshot.clientName());
         refRepo.ensureFundExists(snapshot.fundId(), snapshot.clientId(), snapshot.fundName(), snapshot.baseCurrency());
         refRepo.upsertAccount(snapshot.accountId(), snapshot.fundId(), snapshot.accountNumber(), snapshot.accountType());
+        // Note: Reference data usually safe to use raw snapshot, but can be sanitized if needed
         if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
             refRepo.batchUpsertProducts(snapshot.positions());
         }

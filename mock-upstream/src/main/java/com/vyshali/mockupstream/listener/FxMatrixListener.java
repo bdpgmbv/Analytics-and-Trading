@@ -33,11 +33,13 @@ public class FxMatrixListener {
         try {
             Thread.sleep(500);
         } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); // FIXED: Restore interrupt status
+            log.warn("Order processing interrupted", e);
         }
 
         // Step 3: Generate a FILL (Execution Report)
         // Hardcoded for demo: Buying 1000 EURUSD
-        ExecutionReportDTO fill = new ExecutionReportDTO(clOrdId, "EXEC-" + UUID.randomUUID().toString().substring(0, 6), 1001,       // Hardcoded Account for demo
+        ExecutionReportDTO fill = new ExecutionReportDTO(clOrdId, "EXEC-" + UUID.randomUUID().toString().substring(0, 6), 1001,
                 "EURUSD", "BUY", new BigDecimal("1000"), // Qty Filled
                 new BigDecimal("1.0550"), // Price
                 "FILLED", "FX_MATRIX");

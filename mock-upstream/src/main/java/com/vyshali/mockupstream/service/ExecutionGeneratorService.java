@@ -32,7 +32,10 @@ public class ExecutionGeneratorService {
         for (int i = 0; i < fills.length; i++) {
             try {
                 Thread.sleep(500);
-            } catch (Exception e) {
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt(); // FIXED
+                log.warn("Simulation interrupted");
+                return;
             }
             boolean isLast = (i == fills.length - 1);
             ExecutionReportDTO report = new ExecutionReportDTO(orderId, "EXEC-" + System.nanoTime(), accountId, ticker, "BUY", BigDecimal.valueOf(fills[i]), BigDecimal.valueOf(prices[i]), isLast ? "FILLED" : "PARTIALLY_FILLED", "NYSE");

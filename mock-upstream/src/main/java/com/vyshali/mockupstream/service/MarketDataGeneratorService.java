@@ -40,8 +40,7 @@ public class MarketDataGeneratorService {
                 int id = random.nextInt(100);
                 prices[id] += (random.nextDouble() - 0.5);
 
-                // FIXED: Now passing "EQUITY" as assetClass
-                PriceTickDTO tick = new PriceTickDTO(1000 + id, "TICKER_" + (1000 + id), BigDecimal.valueOf(prices[id]), "USD", "EQUITY", // <--- NEW
+                PriceTickDTO tick = new PriceTickDTO(1000 + id, "TICKER_" + (1000 + id), BigDecimal.valueOf(prices[id]), "USD", "EQUITY",
                         Instant.now(), "FILTER_REALTIME");
                 publisher.sendPriceTick(tick);
             }
@@ -52,6 +51,8 @@ public class MarketDataGeneratorService {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt(); // FIXED
+                running = false;
             }
         }
         log.info("Price Stream Stopped.");

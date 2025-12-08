@@ -5,6 +5,7 @@ package com.vyshali.priceservice.service.strategy;
  * @author Vyshali Prabananth Lal
  */
 
+import com.vyshali.common.constant.AssetClasses; // <--- New Import
 import com.vyshali.priceservice.dto.PriceTickDTO;
 import org.springframework.stereotype.Component;
 
@@ -18,15 +19,17 @@ public class FastPricingStrategy implements PricingStrategy {
 
     @Override
     public boolean supports(String assetClass) {
-        return "EQUITY".equalsIgnoreCase(assetClass) || "FX".equalsIgnoreCase(assetClass);
+        // FIXED: No more magic strings
+        return AssetClasses.EQUITY.equalsIgnoreCase(assetClass) ||
+                AssetClasses.FX.equalsIgnoreCase(assetClass);
     }
 
     @Override
     public BigDecimal calculateMarketValue(BigDecimal quantity, PriceTickDTO tick, BigDecimal fxRate) {
-        // 1. Convert to primitives (micros)
+        // 1. Convert to primitives (micros) for performance
         long qtyMicros = quantity.multiply(BigDecimal.valueOf(MICROS)).longValue();
 
-        // ERROR FIX: Ensure this calls .price() (Record accessor) not .getPrice()
+        // FIXED: Correctly using Record accessor .price()
         long priceMicros = tick.price().multiply(BigDecimal.valueOf(MICROS)).longValue();
 
         long fxMicros = fxRate.multiply(BigDecimal.valueOf(MICROS)).longValue();
