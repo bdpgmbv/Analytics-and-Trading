@@ -12,34 +12,25 @@ java {
 }
 
 dependencies {
-    // Web & DB
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
 
-    // Database Driver & Pool
+    // --- NEW DEPENDENCIES FOR CACHING ---
+    implementation("org.springframework.boot:spring-boot-starter-data-redis")
+    implementation("org.springframework.boot:spring-boot-starter-cache")
+    // ------------------------------------
+
     runtimeOnly("org.postgresql:postgresql")
     implementation("com.zaxxer:HikariCP")
-
-    // Internal Modules
     implementation(project(":common"))
-
-    // Security
     implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
-
-    // Observability
     implementation("io.micrometer:micrometer-registry-prometheus")
     implementation("io.micrometer:micrometer-tracing-bridge-brave")
     implementation("io.zipkin.reporter2:zipkin-reporter-brave")
-
-    // Messaging
     implementation("org.springframework.kafka:spring-kafka")
-
-    // --- NEW: FIX ENGINE ---
     implementation("org.quickfixj:quickfixj-core:2.3.1")
-    // -----------------------
 
-    // Tools
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
 }

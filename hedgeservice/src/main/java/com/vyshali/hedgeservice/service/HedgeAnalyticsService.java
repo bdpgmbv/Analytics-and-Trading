@@ -8,6 +8,7 @@ package com.vyshali.hedgeservice.service;
 import com.vyshali.hedgeservice.dto.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.Cacheable; // <--- NEW
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -61,8 +62,10 @@ public class HedgeAnalyticsService {
         return jdbcTemplate.query(sql, (rs, rowNum) -> new PositionUploadDTO(rs.getString("source_system"), rs.getString("account_number"), rs.getString("identifier_type"), rs.getString("identifier_value"), rs.getString("security_description"), rs.getString("issue_currency"), rs.getString("settlement_currency"), rs.getString("asset_class"), rs.getBigDecimal("quantity"), rs.getBigDecimal("market_value_base")), accountId);
     }
 
-    // 3. Security Exposure Grid (Needs Active Batch)
+    // 3. Security Exposure Grid (HEAVY QUERY -> CACHED)
+    @Cacheable(value = "hedgePositions", key = "#accountId") // <--- CACHING ENABLED
     public List<HedgePositionDTO> getHedgePositions(Integer accountId) {
+        log.info("Fetching Hedge Positions from DB for Account {}", accountId);
         String sql = """
                     SELECT 
                         p.identifier_type, p.identifier_value, p.asset_class, p.issue_currency,
@@ -76,7 +79,7 @@ public class HedgeAnalyticsService {
                     JOIN Products p ON pos.product_id = p.product_id
                     LEFT JOIN Position_Exposures pe ON pos.position_id = pe.position_id
                     WHERE pos.account_id = ?
-                      AND ab.status = 'ACTIVE' -- Filter for Active Batch
+                      AND ab.status = 'ACTIVE'
                     GROUP BY pos.position_id, p.identifier_type, p.identifier_value, p.asset_class, p.issue_currency, pos.quantity, pos.market_value_base, pos.cost_local
                 """;
         return jdbcTemplate.query(sql, (rs, rowNum) -> new HedgePositionDTO(rs.getString("identifier_type"), rs.getString("identifier_value"), rs.getString("asset_class"), rs.getString("issue_currency"), rs.getString("gen_exp_ccy"), rs.getBigDecimal("gen_exp_weight"), rs.getString("spec_exp_ccy"), rs.getBigDecimal("spec_exp_weight"), BigDecimal.ONE, BigDecimal.ZERO, rs.getBigDecimal("quantity"), rs.getBigDecimal("market_value_base"), rs.getBigDecimal("cost_local")), accountId);

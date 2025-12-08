@@ -23,61 +23,82 @@ public class PositionRepository {
     private final JdbcTemplate jdbcTemplate;
 
     // ==================================================================================
-    // 1. BLUE/GREEN BATCH MANAGEMENT
+    // 1. BLUE/GREEN BATCH MANAGEMENT (Snapshot Isolation)
     // ==================================================================================
 
+    /**
+     * Creates a new "STAGING" batch. This batch is invisible to the UI/Downstream
+     * until activated.
+     * Use Case: Start of Day (SOD) or End of Day (EOD) loading.
+     */
     public int createNextBatch(Integer accountId) {
-        // Find the highest batch ID currently used (or 0 if none)
-        Integer maxId = jdbcTemplate.queryForObject("SELECT COALESCE(MAX(batch_id), 0) FROM Account_Batches WHERE account_id = ?", Integer.class, accountId);
+        // 1. Find the highest batch ID currently used (or 0 if none)
+        Integer maxId = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(MAX(batch_id), 0) FROM Account_Batches WHERE account_id = ?",
+                Integer.class, accountId);
         int nextId = maxId + 1;
 
-        // Create the new batch in 'STAGING' mode (invisible to UI)
-        jdbcTemplate.update("INSERT INTO Account_Batches (account_id, batch_id, status) VALUES (?, ?, 'STAGING')", accountId, nextId);
+        // 2. Create the new batch in 'STAGING' mode
+        jdbcTemplate.update(
+                "INSERT INTO Account_Batches (account_id, batch_id, status) VALUES (?, ?, 'STAGING')",
+                accountId, nextId);
 
         return nextId;
     }
 
+    /**
+     * Atomically switches the "ACTIVE" batch. This is the "Flip".
+     * Use Case: After EOD load is successfully committed.
+     */
     public void activateBatch(Integer accountId, int batchId) {
-        // 1. Archive the currently ACTIVE batch
-        jdbcTemplate.update("UPDATE Account_Batches SET status = 'ARCHIVED' WHERE account_id = ? AND status = 'ACTIVE'", accountId);
+        // 1. Mark the OLD active batch as ARCHIVED
+        jdbcTemplate.update(
+                "UPDATE Account_Batches SET status = 'ARCHIVED' WHERE account_id = ? AND status = 'ACTIVE'",
+                accountId);
 
-        // 2. Flip the STAGING batch to ACTIVE
-        jdbcTemplate.update("UPDATE Account_Batches SET status = 'ACTIVE' WHERE account_id = ? AND batch_id = ?", accountId, batchId);
+        // 2. Mark the NEW batch as ACTIVE
+        jdbcTemplate.update(
+                "UPDATE Account_Batches SET status = 'ACTIVE' WHERE account_id = ? AND batch_id = ?",
+                accountId, batchId);
     }
 
+    /**
+     * Deletes old archived data to save space.
+     * Use Case: Housekeeping after EOD.
+     */
     public void cleanUpArchivedBatches(Integer accountId) {
-        // 1. Delete actual position rows from old batches
+        // 1. Delete actual position rows
         String sql = """
-                    DELETE FROM Positions 
-                    WHERE account_id = ? 
-                      AND batch_id IN (SELECT batch_id FROM Account_Batches WHERE account_id = ? AND status = 'ARCHIVED')
-                """;
+            DELETE FROM Positions 
+            WHERE account_id = ? 
+              AND batch_id IN (SELECT batch_id FROM Account_Batches WHERE account_id = ? AND status = 'ARCHIVED')
+        """;
         jdbcTemplate.update(sql, accountId, accountId);
 
-        // 2. Delete the batch metadata records
+        // 2. Delete metadata rows
         jdbcTemplate.update("DELETE FROM Account_Batches WHERE account_id = ? AND status = 'ARCHIVED'", accountId);
     }
 
     // ==================================================================================
-    // 2. WRITE OPERATIONS
+    // 2. WRITE OPERATIONS (Insert / Update)
     // ==================================================================================
 
     /**
-     * EOD Load: Inserts into a specific (Staging) batch.
+     * Batch Insert for EOD Load. Writes to a specific (Staging) Batch ID.
      */
     public void batchInsertPositions(Integer accountId, List<PositionDetailDTO> positions, String source, int batchId) {
         String sql = """
-                    INSERT INTO Positions (
-                        position_id, account_id, product_id, 
-                        quantity, avg_cost_price, cost_local, 
-                        source_system, position_type, batch_id
-                    )
-                    VALUES (
-                        nextval('position_seq'), ?, ?, 
-                        ?, ?, ?, 
-                        ?, 'PHYSICAL', ?
-                    )
-                """;
+            INSERT INTO Positions (
+                position_id, account_id, product_id, 
+                quantity, avg_cost_price, cost_local, 
+                source_system, position_type, batch_id
+            )
+            VALUES (
+                nextval('position_seq'), ?, ?, 
+                ?, ?, ?, 
+                ?, 'PHYSICAL', ?
+            )
+        """;
 
         jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
             @Override
@@ -92,69 +113,60 @@ public class PositionRepository {
                 ps.setBigDecimal(4, price);
                 ps.setBigDecimal(5, totalCost);
                 ps.setString(6, source);
-                ps.setInt(7, batchId); // Insert into the specific batch
+                ps.setInt(7, batchId);
             }
 
             @Override
-            public int getBatchSize() {
-                return positions.size();
-            }
+            public int getBatchSize() { return positions.size(); }
         });
     }
 
     /**
-     * Intraday Load: Incremental Upsert on the ACTIVE batch.
+     * Incremental Upsert for Intraday Trading.
+     * Automatically finds and updates the currently ACTIVE batch.
+     * Calculates Weighted Average Cost (WAC) on the fly.
      */
     public void batchIncrementalUpsert(Integer accountId, List<PositionDetailDTO> positions, String source) {
-        // 1. Resolve the currently Active Batch
-        Integer activeBatchId;
+        // 1. Find the Active Batch (Fail if none exists)
+        Integer batchId;
         try {
-            activeBatchId = jdbcTemplate.queryForObject("SELECT batch_id FROM Account_Batches WHERE account_id = ? AND status = 'ACTIVE'", Integer.class, accountId);
+            batchId = jdbcTemplate.queryForObject(
+                    "SELECT batch_id FROM Account_Batches WHERE account_id = ? AND status = 'ACTIVE'",
+                    Integer.class, accountId);
         } catch (Exception e) {
-            // Fallback: If no batch exists, create one (auto-healing)
-            activeBatchId = createNextBatch(accountId);
-            activateBatch(accountId, activeBatchId);
+            // Self-Healing: If no batch exists (e.g. new account), create one.
+            batchId = createNextBatch(accountId);
+            activateBatch(accountId, batchId);
         }
-        final int batchId = activeBatchId;
+        final int activeBatchId = batchId;
 
-        // 2. Perform Upsert
+        // 2. Upsert Logic (Postgres Specific)
+        // Requires UNIQUE INDEX on (account_id, product_id, batch_id)
         String sql = """
-                    INSERT INTO Positions (
-                        account_id, product_id, quantity, avg_cost_price, cost_local, source_system, position_type, batch_id
-                    )
-                    VALUES (
-                        ?, ?, 
-                        CASE WHEN ? IN ('SELL', 'SHORT_SELL') THEN -? ELSE ? END, 
-                        ?, 
-                        (CASE WHEN ? IN ('SELL', 'SHORT_SELL') THEN -? ELSE ? END) * ?,
-                        ?, 'PHYSICAL', ?
-                    )
-                    ON CONFLICT (account_id, product_id) WHERE batch_id = ?  -- Partial Index Conflict (Postgres Specific)
-                    DO UPDATE SET 
-                        avg_cost_price = CASE 
-                            WHEN EXCLUDED.quantity > 0 THEN 
-                                ( (Positions.quantity * Positions.avg_cost_price) + (EXCLUDED.quantity * EXCLUDED.avg_cost_price) ) 
-                                / NULLIF((Positions.quantity + EXCLUDED.quantity), 0)
-                            ELSE Positions.avg_cost_price 
-                        END,
-                        quantity = Positions.quantity + EXCLUDED.quantity, 
-                        cost_local = (Positions.quantity + EXCLUDED.quantity) * (
-                            CASE 
-                                WHEN EXCLUDED.quantity > 0 THEN 
-                                   ((Positions.quantity * Positions.avg_cost_price) + (EXCLUDED.quantity * EXCLUDED.avg_cost_price)) 
-                                   / NULLIF((Positions.quantity + EXCLUDED.quantity), 0)
-                                ELSE Positions.avg_cost_price 
-                            END
-                        ),
-                        source_system = EXCLUDED.source_system,
-                        updated_at = CURRENT_TIMESTAMP
-                """;
-
-        // Note: The ON CONFLICT clause above assumes you have a unique constraint/index on (account_id, product_id, batch_id).
-        // Since we added batch_id to the table, we should ideally drop the old constraint and add a new one including batch_id.
-        // For this code to work strictly as written, ensure you run:
-        // DROP INDEX uq_pos_account_product;
-        // CREATE UNIQUE INDEX uq_pos_batch_prod ON Positions(account_id, product_id, batch_id);
+            INSERT INTO Positions (
+                account_id, product_id, quantity, avg_cost_price, cost_local, source_system, position_type, batch_id
+            )
+            VALUES (
+                ?, ?, 
+                CASE WHEN ? IN ('SELL', 'SHORT_SELL') THEN -? ELSE ? END, 
+                ?, 
+                (CASE WHEN ? IN ('SELL', 'SHORT_SELL') THEN -? ELSE ? END) * ?,
+                ?, 'PHYSICAL', ?
+            )
+            ON CONFLICT (account_id, product_id) WHERE batch_id = ? 
+            DO UPDATE SET 
+                -- Weighted Average Cost Formula: (OldCost + NewCost) / (OldQty + NewQty)
+                avg_cost_price = CASE 
+                    WHEN (Positions.quantity + EXCLUDED.quantity) <> 0 THEN 
+                        ( (Positions.quantity * Positions.avg_cost_price) + (EXCLUDED.quantity * EXCLUDED.avg_cost_price) ) 
+                        / (Positions.quantity + EXCLUDED.quantity)
+                    ELSE Positions.avg_cost_price 
+                END,
+                quantity = Positions.quantity + EXCLUDED.quantity, 
+                cost_local = Positions.cost_local + EXCLUDED.cost_local,
+                source_system = EXCLUDED.source_system,
+                updated_at = CURRENT_TIMESTAMP
+        """;
 
         jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
             @Override
@@ -165,45 +177,72 @@ public class PositionRepository {
                 ps.setInt(1, accountId);
                 ps.setInt(2, p.productId());
 
-                // Qty Logic
+                // Qty (Column 3, 4, 5)
                 ps.setString(3, p.txnType());
                 ps.setBigDecimal(4, p.quantity());
                 ps.setBigDecimal(5, p.quantity());
 
-                // Cost Logic
+                // Price (Column 6)
                 ps.setBigDecimal(6, price);
+
+                // Cost Calculation (Column 7, 8, 9)
                 ps.setString(7, p.txnType());
                 ps.setBigDecimal(8, p.quantity());
                 ps.setBigDecimal(9, p.quantity());
                 ps.setBigDecimal(10, price);
 
                 ps.setString(11, source);
-                ps.setInt(12, batchId);
-                ps.setInt(13, batchId); // For ON CONFLICT WHERE clause
+                ps.setInt(12, activeBatchId);
+                ps.setInt(13, activeBatchId); // For WHERE clause
             }
 
             @Override
-            public int getBatchSize() {
-                return positions.size();
-            }
+            public int getBatchSize() { return positions.size(); }
         });
     }
 
     /**
-     * Updates quantity for Trade Lifecycle (Amend/Cancel). Target ACTIVE batch.
+     * Updates specific position quantity. Used for Amends/Cancels/Sales.
+     * Targets the ACTIVE batch.
      */
     public void upsertPositionQuantity(Integer accountId, Integer productId, BigDecimal quantityDelta) {
         String sql = """
-                    UPDATE Positions 
-                    SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE account_id = ? 
-                      AND product_id = ? 
-                      AND batch_id = (SELECT batch_id FROM Account_Batches WHERE account_id = ? AND status = 'ACTIVE')
-                """;
+            UPDATE Positions 
+            SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP
+            WHERE account_id = ? 
+              AND product_id = ? 
+              AND batch_id = (SELECT batch_id FROM Account_Batches WHERE account_id = ? AND status = 'ACTIVE')
+        """;
         jdbcTemplate.update(sql, quantityDelta, accountId, productId, accountId);
     }
 
-    // Legacy support (No-op in Blue/Green as we use cleanUpArchivedBatches)
+    // ==================================================================================
+    // 3. READ OPERATIONS (Queries)
+    // ==================================================================================
+
+    /**
+     * Fetches the current total quantity for a product in the ACTIVE batch.
+     * Used to publish granular updates to Price Service.
+     */
+    public BigDecimal getPositionQuantity(Integer accountId, Integer productId) {
+        String sql = """
+            SELECT COALESCE(SUM(quantity), 0)
+            FROM Positions 
+            WHERE account_id = ? 
+              AND product_id = ? 
+              AND batch_id = (SELECT batch_id FROM Account_Batches WHERE account_id = ? AND status = 'ACTIVE')
+        """;
+        try {
+            return jdbcTemplate.queryForObject(sql, BigDecimal.class, accountId, productId, accountId);
+        } catch (Exception e) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    /**
+     * Legacy Delete (No-op in Blue/Green as we use cleanUpArchivedBatches)
+     */
     public void deletePositionsByAccount(Integer accountId) {
+        // Intentionally left empty or deprecated
     }
 }
