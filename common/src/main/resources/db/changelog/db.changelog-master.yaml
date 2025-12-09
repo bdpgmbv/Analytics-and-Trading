@@ -5,3 +5,9 @@ databaseChangeLog:
       file: db/changelog/changes/002-trading-tables.sql
   - include:
       file: db/changelog/changes/003-ops-schema.sql
+  - include:
+      file: db/changelog/changes/004-hedge-orders.sql
+  - include:
+      file: db/changelog/changes/005-missing-tables.sql
+  - include:
+      file: db/changelog/changes/006-add-missing-columns.sql

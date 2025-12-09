@@ -51,4 +51,7 @@ dependencies {
     testImplementation("org.testcontainers:junit-jupiter:1.19.3")
     testImplementation("org.testcontainers:postgresql:1.19.3")
     testImplementation("org.testcontainers:kafka:1.19.3")
+
+    // Fixes "Cannot resolve symbol 'io.swagger...'"
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0")
 }

@@ -1,16 +1,12 @@
 server:
   port: 8080
-  shutdown: graceful
-  tomcat:
-    threads:
-      max: 200 # Standard Tomcat threads for handling HTTP requests
-      min-spare: 20
+  shutdown: graceful # Waits for active requests to finish before killing pod
 
 spring:
   application:
     name: positionloader
 
-  # CRITICAL: Enable Java 21 Virtual Threads (Project Loom)
+  # PERFORMANCE: Enable Virtual Threads (Project Loom)
   threads:
     virtual:
       enabled: true
@@ -22,77 +18,60 @@ spring:
     driver-class-name: org.postgresql.Driver
     hikari:
       # PERFORMANCE TUNING FOR VIRTUAL THREADS
-      # Virtual threads are cheap/fast; DB connections are expensive/slow.
-      # We need a larger pool to prevent thread starvation.
+      # Virtual threads are fast; DB connections are the bottleneck.
+      # Increased pool size prevents virtual thread starvation.
       maximum-pool-size: 50
       minimum-idle: 10
-      connection-timeout: 5000 # Fail fast (5s) if DB is overwhelmed
+      connection-timeout: 5000
       idle-timeout: 600000
       max-lifetime: 1800000
-
-  liquibase:
-    change-log: classpath:db/changelog/db.changelog-master.yaml
-    enabled: true
-
-  cache:
-    type: caffeine
-    caffeine:
-      # High-performance in-memory cache for Reference Data
-      spec: maximumSize=10000,expireAfterWrite=24h
 
   kafka:
     bootstrap-servers: localhost:9092
     consumer:
       group-id: positionloader-group
       auto-offset-reset: earliest
-      enable-auto-commit: false # We commit manually in Listener
+      enable-auto-commit: false # We use manual/record ack mode in Java config
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     listener:
+      # This is a fallback; Java Config (KafkaConfig.java) takes precedence
       ack-mode: MANUAL_IMMEDIATE
 
-# Upstream Configuration
+# Upstream Configuration for RestClient
 upstream:
   mspm:
-    # Points to the Docker container name defined in compose.yaml
-    base-url: ${UPSTREAM_MSPM_BASE_URL:http://localhost:8081/mspm} # Pull-based EOD source
+    base-url: ${UPSTREAM_MSPM_BASE_URL:http://localhost:8081/mspm}
 
-## Observability & Health Probes (K8s Standard)
-#management:
-#  endpoints:
-#    web:
-#      exposure:
-#        include: health, metrics, prometheus, info
-#  endpoint:
-#    health:
-#      probes:
-#        enabled: true # Exposes /actuator/health/liveness & /readiness
-#      show-details: always
-#  tracing:
-#    sampling:
-#      probability: 1.0 # Sample 100% of traces (adjust for high volume)
-
+# Resilience4j: Circuit Breaker for Upstream Dependencies
 resilience4j:
   circuitbreaker:
     instances:
       mspm-service:
-        slidingWindowSize: 5
-        failureRateThreshold: 50 # Open circuit if 50% requests fail
-        waitDurationInOpenState: 10s
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 5s
+        failureRateThreshold: 50
   retry:
     instances:
       mspm-service:
-        maxAttempts: 3
-        waitDuration: 1s
+        maxRetryAttempts: 3
+        waitDuration: 2s
 
+# Observability
 management:
-  tracing:
-    sampling:
-      probability: 1.0 # Log 100% of requests (for dev/demo only)
-  zipkin:
-    tracing:
-      endpoint: http://tempo:9411/api/v2/spans # Send traces to Tempo container
   endpoints:
     web:
       exposure:
-        include: "health,metrics,prometheus"
+        include: "health,metrics,prometheus,info"
+  endpoint:
+    health:
+      probes:
+        enabled: true # K8s Liveness/Readiness probes
+      show-details: always
+  tracing:
+    sampling:
+      probability: 1.0
