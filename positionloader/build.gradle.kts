@@ -14,30 +14,33 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
-    implementation("org.springframework.boot:spring-boot-starter-validation") // Fixes @NotNull errors
     implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
 
-    // MESSAGING & DB
+    // FIX: VALIDATION
+    implementation("org.springframework.boot:spring-boot-starter-validation")
+
+    // FIX: KAFKA
     implementation("org.springframework.kafka:spring-kafka")
+
+    // DB Connection
     runtimeOnly("org.postgresql:postgresql")
     implementation("com.zaxxer:HikariCP")
 
-    // DISTRIBUTED LOCKING (Fixes ShedLockConfig errors)
+    // FIX: DISTRIBUTED LOCKING
     implementation("net.javacrumbs.shedlock:shedlock-spring:5.10.0")
     implementation("net.javacrumbs.shedlock:shedlock-provider-jdbc-template:5.10.0")
 
-    // RESILIENCE (Fixes CircuitBreaker errors)
+    // FIX: RESILIENCE
     implementation("io.github.resilience4j:resilience4j-spring-boot3:2.2.0")
 
-    // UTILS & METRICS
+    // OBSERVABILITY
     implementation("io.micrometer:micrometer-registry-prometheus")
     implementation("io.micrometer:micrometer-tracing-bridge-brave")
     implementation("io.zipkin.reporter2:zipkin-reporter-brave")
 
+    // UTILS
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
-
-    // MAPPING
     implementation("org.mapstruct:mapstruct:1.5.5.Final")
     annotationProcessor("org.mapstruct:mapstruct-processor:1.5.5.Final")
     annotationProcessor("org.projectlombok:lombok-mapstruct-binding:0.2.0")

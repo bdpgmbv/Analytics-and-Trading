@@ -7,7 +7,7 @@ package com.vyshali.positionloader.listener;
 
 import com.vyshali.positionloader.dto.TradeEventDTO;
 import com.vyshali.positionloader.service.SnapshotService;
-import jakarta.validation.Valid; // Import this
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -21,10 +21,8 @@ public class IntradayListener {
 
     private final SnapshotService snapshotService;
 
-    @KafkaListener(topics = "MSPA_INTRADAY", groupId = "loader-group")
+    @KafkaListener(topics = "MSPA_INTRADAY", groupId = "loader-group", containerFactory = "intradayFactory")
     public void onTradeEvent(@Payload @Valid TradeEventDTO event) {
-        // @Valid checks the DTO before this method runs.
-        // If invalid, it throws an exception and the message goes to the DLQ (handled by framework).
         log.info("Received Validated Trade Event: {}", event.transactionId());
         snapshotService.processTradeEvent(event);
     }

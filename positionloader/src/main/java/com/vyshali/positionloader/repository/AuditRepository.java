@@ -12,7 +12,6 @@ import org.springframework.stereotype.Repository;
 @Repository
 @RequiredArgsConstructor
 public class AuditRepository {
-
     private final JdbcTemplate jdbcTemplate;
 
     public void logEvent(String type, String entityId, String actor, String payload) {

@@ -17,12 +17,5 @@ public final class TransactionSql {
                 ON CONFLICT (external_ref_id) DO NOTHING
             """;
 
-    public static final String FIND_QTY_BY_REF = """
-                SELECT quantity FROM Transactions WHERE external_ref_id = ?
-            """;
-
-    // Used for Audit/Replay
-    public static final String FIND_BY_ACCOUNT = """
-                SELECT * FROM Transactions WHERE account_id = ? ORDER BY trade_date DESC
-            """;
+    public static final String FIND_QTY_BY_REF = "SELECT quantity FROM Transactions WHERE external_ref_id = ?";
 }

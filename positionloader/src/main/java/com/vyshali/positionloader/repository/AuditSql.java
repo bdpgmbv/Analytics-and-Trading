@@ -9,9 +9,5 @@ public final class AuditSql {
     private AuditSql() {
     }
 
-    public static final String INSERT_AUDIT = """
-                INSERT INTO Audit_Logs (
-                    event_type, entity_id, actor, payload, timestamp
-                ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """;
+    public static final String INSERT_AUDIT = "INSERT INTO Audit_Logs (event_type, entity_id, actor, payload, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)";
 }

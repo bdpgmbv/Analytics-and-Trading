@@ -15,22 +15,20 @@ import java.util.List;
 
 public record TradeEventDTO(@NotBlank(message = "Transaction ID is required") String transactionId,
 
-                            String originalRefId, // Optional (only for Amend/Cancel)
+                            String originalRefId, // Optional
 
-                            @NotBlank(message = "Event Type (NEW/AMEND/CANCEL) is required") String eventType,
+                            @NotBlank(message = "Event Type is required") String eventType,
 
-                            @NotNull(message = "Account ID is mandatory") Integer accountId,
+                            @NotNull(message = "Account ID is required") Integer accountId,
 
                             Integer clientId,
 
-                            @Valid // Cascades validation to the list items
-                            List<PositionDetail> positions) {
+                            @Valid List<PositionDetail> positions) {
     public record PositionDetail(@NotNull Integer productId, @NotBlank String ticker,
 
-                                 @NotNull @Positive(message = "Quantity must be positive") // Fail fast on -100
-                                 BigDecimal quantity,
+                                 @NotNull @Positive(message = "Quantity must be positive") BigDecimal quantity,
 
-                                 @NotBlank String txnType, // BUY/SELL
+                                 @NotBlank String txnType,
 
                                  @Positive BigDecimal price) {
     }

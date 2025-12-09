@@ -18,7 +18,6 @@ import java.util.List;
 @Repository
 @RequiredArgsConstructor
 public class ReferenceDataRepository {
-
     private final JdbcTemplate jdbcTemplate;
 
     public void ensureClientExists(Integer clientId, String clientName) {
@@ -35,16 +34,14 @@ public class ReferenceDataRepository {
 
     public void batchUpsertProducts(List<PositionDetailDTO> positions) {
         jdbcTemplate.batchUpdate(ReferenceDataSql.UPSERT_PRODUCT, new BatchPreparedStatementSetter() {
-            @Override
             public void setValues(PreparedStatement ps, int i) throws SQLException {
                 PositionDetailDTO p = positions.get(i);
                 ps.setInt(1, p.productId());
                 ps.setString(2, p.ticker());
-                ps.setString(3, p.assetClass());
-                ps.setString(4, p.description());
+                ps.setString(3, "EQUITY");
+                ps.setString(4, "Imported");
             }
 
-            @Override
             public int getBatchSize() {
                 return positions.size();
             }
