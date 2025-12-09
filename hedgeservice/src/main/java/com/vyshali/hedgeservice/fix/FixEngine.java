@@ -5,16 +5,21 @@ package com.vyshali.hedgeservice.fix;
  * @author Vyshali Prabananth Lal
  */
 
+package com.vyshali.hedgeservice.fix;
+
 import com.vyshali.hedgeservice.dto.HedgeExecutionRequestDTO;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired; // Use Autowired for circular dep avoidance if needed
+import org.springframework.kafka.core.KafkaTemplate; // <--- NEW
 import org.springframework.stereotype.Component;
 import quickfix.*;
 import quickfix.field.*;
 import quickfix.fix44.ExecutionReport;
 import quickfix.fix44.NewOrderSingle;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -25,17 +30,21 @@ public class FixEngine extends MessageCracker implements Application {
     private SocketInitiator initiator;
     private SessionID activeSession;
 
+    // Inject Kafka to close the loop
+    @Autowired
+    private KafkaTemplate<String, Object> kafkaTemplate;
+
     @PostConstruct
     public void start() {
+        // ... (Existing startup code) ...
         try {
             SessionSettings settings = new SessionSettings(getClass().getResourceAsStream("/quickfix-client.cfg"));
             FileStoreFactory storeFactory = new FileStoreFactory(settings);
             LogFactory logFactory = new ScreenLogFactory(settings);
             MessageFactory messageFactory = new DefaultMessageFactory();
-
             initiator = new SocketInitiator(this, storeFactory, settings, logFactory, messageFactory);
             initiator.start();
-            log.info("FIX Engine Started. Connecting to Exchange...");
+            log.info("FIX Engine Started.");
         } catch (Exception e) {
             log.error("Failed to start FIX Engine", e);
         }
@@ -46,79 +55,70 @@ public class FixEngine extends MessageCracker implements Application {
         if (initiator != null) initiator.stop();
     }
 
-    // --- SENDING ORDERS ---
-
     public String sendOrder(HedgeExecutionRequestDTO request) {
-        if (activeSession == null) {
-            throw new RuntimeException("FIX Session is not active! Cannot trade.");
-        }
+        if (activeSession == null) throw new RuntimeException("FIX Session Down");
 
         String clOrdId = UUID.randomUUID().toString();
-
-        // 1. Build FIX 4.4 Message
-        NewOrderSingle order = new NewOrderSingle(new ClOrdID(clOrdId), new Side(request.side().equalsIgnoreCase("BUY") ? Side.BUY : Side.SELL), new TransactTime(LocalDateTime.now()), new OrdType(OrdType.MARKET));
-
+        NewOrderSingle order = new NewOrderSingle(
+                new ClOrdID(clOrdId),
+                new Side(request.side().equalsIgnoreCase("BUY") ? Side.BUY : Side.SELL),
+                new TransactTime(LocalDateTime.now()),
+                new OrdType(OrdType.MARKET)
+        );
         order.set(new Symbol(request.currencyPair()));
         order.set(new OrderQty(request.quantity().doubleValue()));
-        order.set(new HandlInst('1')); // Automated execution
+        order.set(new HandlInst('1'));
 
-        // 2. Send over TCP
         try {
             Session.sendToTarget(order, activeSession);
-            log.info("FIX SENT: NewOrderSingle ID={}", clOrdId);
             return clOrdId;
         } catch (SessionNotFound e) {
-            log.error("Session dropped while sending", e);
-            throw new RuntimeException("Trade Failed: Session Lost");
+            throw new RuntimeException("Session Lost");
         }
     }
 
-    // --- RECEIVING MESSAGES (Callbacks) ---
-
-    @Override
-    public void onCreate(SessionID sessionId) {
-        log.info("Session Created: {}", sessionId);
-    }
-
-    @Override
-    public void onLogon(SessionID sessionId) {
-        log.info("Logged On: {}", sessionId);
-        this.activeSession = sessionId;
-    }
-
-    @Override
-    public void onLogout(SessionID sessionId) {
-        log.warn("Logged Out: {}", sessionId);
-        this.activeSession = null;
-    }
-
-    @Override
-    public void toAdmin(Message message, SessionID sessionId) {
-    }
-
-    @Override
-    public void fromAdmin(Message message, SessionID sessionId) throws FieldNotFound, IncorrectDataFormat, IncorrectTagValue, RejectLogon {
-    }
-
-    @Override
-    public void toApp(Message message, SessionID sessionId) throws DoNotSend {
-    }
+    // --- CALLBACKS ---
+    // ... (onCreate, onLogon, onLogout, toAdmin, fromAdmin, toApp same as before) ...
+    @Override public void onCreate(SessionID sessionId) {}
+    @Override public void onLogon(SessionID sessionId) { this.activeSession = sessionId; }
+    @Override public void onLogout(SessionID sessionId) { this.activeSession = null; }
+    @Override public void toAdmin(Message message, SessionID sessionId) {}
+    @Override public void fromAdmin(Message message, SessionID sessionId) throws FieldNotFound, IncorrectDataFormat, IncorrectTagValue, RejectLogon {}
+    @Override public void toApp(Message message, SessionID sessionId) throws DoNotSend {}
 
     @Override
     public void fromApp(Message message, SessionID sessionId) throws FieldNotFound, IncorrectDataFormat, UnsupportedMessageType, IncorrectTagValue {
-        // "Crack" the message (identify type) and call specific handler
         crack(message, sessionId);
     }
 
-    // Handler for Execution Reports (Fills)
+    // --- THE CRITICAL FIX ---
     public void onMessage(ExecutionReport message, SessionID sessionID) throws FieldNotFound {
         String execId = message.getExecID().getValue();
-        String status = message.getOrdStatus().getValue() + ""; // char to string
+        String orderId = message.getClOrdID().getValue(); // Correlate with our ClOrdId
         double filledQty = message.getCumQty().getValue();
         double price = message.getAvgPx().getValue();
+        String symbol = message.getSymbol().getValue();
+        String side = message.getSide().getValue() == Side.BUY ? "BUY" : "SELL";
 
-        log.info("FIX RECV: ExecutionReport ExecID={} Status={} Qty={} Price={}", execId, status, filledQty, price);
+        log.info("FIX FILL: ID={} Order={} Qty={} Price={}", execId, orderId, filledQty, price);
 
-        // In a real system, we would push this 'Fill' to the TradeFillProcessor via Kafka here.
+        // 1. Create a DTO that matches TradeFillProcessor's expectation
+        // We reuse the DTO format defined in common or replicate it here
+        // Assuming JSON serialization:
+        String jsonPayload = String.format("""
+            {
+                "execId": "%s",
+                "orderId": "%s",
+                "symbol": "%s",
+                "side": "%s",
+                "lastQty": %f,
+                "lastPx": %f,
+                "status": "FILLED",
+                "venue": "FIX_EXCHANGE"
+            }
+        """, execId, orderId, symbol, side, filledQty, price);
+
+        // 2. Publish to Kafka (TradeFillProcessor listens to RAW_EXECUTION_REPORTS)
+        kafkaTemplate.send("RAW_EXECUTION_REPORTS", orderId, jsonPayload);
     }
 }

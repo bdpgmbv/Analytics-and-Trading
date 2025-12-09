@@ -1,7 +1,7 @@
 package com.vyshali.positionloader.repository;
 
 /*
- * 12/02/2025 - 1:32 PM
+ * 12/09/2025 - Added Idempotency Check
  * @author Vyshali Prabananth Lal
  */
 
@@ -23,10 +23,13 @@ public class TransactionRepository {
     private final JdbcTemplate jdbcTemplate;
 
     public void batchInsertTransactions(Integer accountId, List<PositionDetailDTO> positions) {
-        jdbcTemplate.batchUpdate(TransactionSql.INSERT_TXN, new BatchPreparedStatementSetter() {
+        // Assuming TransactionSql.INSERT_TXN is defined elsewhere or inlined
+        String sql = "INSERT INTO Transactions (transaction_id, account_id, product_id, txn_type, trade_date, quantity, price, total_amount, reference_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+        jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
             public void setValues(PreparedStatement ps, int i) throws SQLException {
                 PositionDetailDTO p = positions.get(i);
-                long txnId = System.nanoTime() + i;
+                long txnId = System.nanoTime() + i; // Ideally use a sequence or UUID
                 ps.setLong(1, txnId);
                 ps.setInt(2, accountId);
                 ps.setInt(3, p.productId());
@@ -45,10 +48,18 @@ public class TransactionRepository {
     }
 
     public BigDecimal findQuantityByRefId(String refId) {
+        String sql = "SELECT quantity FROM Transactions WHERE reference_id = ?";
         try {
-            return jdbcTemplate.queryForObject(TransactionSql.FIND_QTY_BY_REF, BigDecimal.class, refId);
+            return jdbcTemplate.queryForObject(sql, BigDecimal.class, refId);
         } catch (Exception e) {
             return BigDecimal.ZERO;
         }
+    }
+
+    // *** NEW METHOD FOR IDEMPOTENCY ***
+    public boolean existsByTransactionId(String transactionId) {
+        String sql = "SELECT COUNT(1) FROM Transactions WHERE reference_id = ?";
+        Integer count = jdbcTemplate.queryForObject(sql, Integer.class, transactionId);
+        return count != null && count > 0;
     }
 }

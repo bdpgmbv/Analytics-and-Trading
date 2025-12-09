@@ -17,6 +17,8 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Set;
+import java.time.Duration;
+import java.time.Instant;
 
 @Slf4j
 @Service
@@ -54,6 +56,13 @@ public class ValuationService {
         PriceTickDTO priceTick = priceCache.getPrice(productId);
         if (allAccounts == null || allAccounts.isEmpty() || priceTick == null) return;
 
+        // --- NEW SAFETY CHECK ---
+        if (isStale(priceTick)) {
+            log.warn("STALE PRICE DETECTED: Product {} tick is {} seconds old. Skipping val.", productId, Duration.between(priceTick.timestamp(), Instant.now()).getSeconds());
+            // Optionally push a "Stale" status valuation to UI so they know it's dangerous
+            return;
+        }
+
         // 3. Register Currency
         fxCache.registerProductCurrency(productId, priceTick.currency());
 
@@ -62,21 +71,25 @@ public class ValuationService {
         PricingStrategy strategy = pricingStrategies.stream().filter(s -> s.supports(assetClass)).findFirst().orElse((q, p, f) -> p.price().multiply(q).multiply(f));
 
         // 5. SHARDED PROCESSING LOOP
-        allAccounts.stream()
-                .filter(accountId -> (accountId % totalShards) == shardId).forEach(accountId -> {
-                    try {
-                        BigDecimal qty = positionCache.getQuantity(accountId, productId);
-                        if (qty.compareTo(BigDecimal.ZERO) == 0) return;
+        allAccounts.stream().filter(accountId -> (accountId % totalShards) == shardId).forEach(accountId -> {
+            try {
+                BigDecimal qty = positionCache.getQuantity(accountId, productId);
+                if (qty.compareTo(BigDecimal.ZERO) == 0) return;
 
-                        BigDecimal fxRate = fxCache.getConversionRate(priceTick.currency(), "USD");
-                        BigDecimal marketValue = strategy.calculateMarketValue(qty, priceTick, fxRate);
+                BigDecimal fxRate = fxCache.getConversionRate(priceTick.currency(), "USD");
+                BigDecimal marketValue = strategy.calculateMarketValue(qty, priceTick, fxRate);
 
-                        ValuationDTO valuation = new ValuationDTO(accountId, productId, marketValue, priceTick.price(), fxRate, "REAL_TIME");
-                        conflationService.queueValuation(valuation);
+                ValuationDTO valuation = new ValuationDTO(accountId, productId, marketValue, priceTick.price(), fxRate, "REAL_TIME");
+                conflationService.queueValuation(valuation);
 
-                    } catch (Exception e) {
-                        log.error("Valuation calculation error for Account {}", accountId, e);
-                    }
-                });
+            } catch (Exception e) {
+                log.error("Valuation calculation error for Account {}", accountId, e);
+            }
+        });
+    }
+
+    private boolean isStale(PriceTickDTO tick) {
+        // 15 Minute Staleness Threshold
+        return Duration.between(tick.timestamp(), Instant.now()).toMinutes() > 15;
     }
 }
