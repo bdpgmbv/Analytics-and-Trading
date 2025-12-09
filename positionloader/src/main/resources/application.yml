@@ -1,49 +1,100 @@
-server:
-  port: 8080
-  shutdown: graceful # Waits for active requests to finish before killing pod
+# =====================================================
+# POSITION LOADER - CRITICAL FIXES CONFIGURATION
+# @author Vyshali Prabananth Lal
+# =====================================================
 
 spring:
   application:
     name: positionloader
-
-  # PERFORMANCE: Enable Virtual Threads (Project Loom)
-  threads:
-    virtual:
-      enabled: true
-
+  
+  # Database Configuration
   datasource:
-    url: jdbc:postgresql://localhost:5432/analyticsandtrading
-    username: ${DB_USER:postgres}
-    password: ${DB_PASS:password}
-    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://localhost:5432/fxanalyzer
+    username: ${DB_USERNAME:fxanalyzer}
+    password: ${DB_PASSWORD}
     hikari:
-      # PERFORMANCE TUNING FOR VIRTUAL THREADS
-      # Virtual threads are fast; DB connections are the bottleneck.
-      # Increased pool size prevents virtual thread starvation.
-      maximum-pool-size: 50
-      minimum-idle: 10
-      connection-timeout: 5000
-      idle-timeout: 600000
-      max-lifetime: 1800000
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 10000
+      idle-timeout: 300000
+      max-lifetime: 600000
 
+  # Redis Cache Configuration (Fix #8)
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 5000ms
+      lettuce:
+        pool:
+          max-active: 20
+          max-idle: 10
+          min-idle: 5
+
+  # Kafka Configuration
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
     consumer:
       group-id: positionloader-group
       auto-offset-reset: earliest
-      enable-auto-commit: false # We use manual/record ack mode in Java config
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-    listener:
-      # This is a fallback; Java Config (KafkaConfig.java) takes precedence
-      ack-mode: MANUAL_IMMEDIATE
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
 
-# Upstream Configuration for RestClient
+# =====================================================
+# UPSTREAM SERVICES (Fix #4: Timeouts)
+# =====================================================
 upstream:
   mspm:
-    base-url: ${UPSTREAM_MSPM_BASE_URL:http://localhost:8081/mspm}
+    base-url: ${MSPM_BASE_URL:http://mspm-service}
+    connect-timeout-ms: 5000
+    read-timeout-ms: 30000
 
-# Resilience4j: Circuit Breaker for Upstream Dependencies
+# =====================================================
+# EOD PARALLEL PROCESSING (Fix #1)
+# =====================================================
+eod:
+  parallel:
+    max-concurrency: 50
+    timeout-minutes: 30
+    retry-failed: true
+  
+  schedule:
+    cron: "0 0 18 * * MON-FRI"
+    timezone: America/New_York
+
+# =====================================================
+# VALIDATION SETTINGS (Fix #2)
+# =====================================================
+validation:
+  strict-mode: false
+  max-quantity: 1000000000
+  max-price: 100000
+  max-market-value: 10000000000
+  zero-price-threshold-pct: 10
+  suspicious-change-pct: 50
+
+# =====================================================
+# CACHE SETTINGS (Fix #8)
+# =====================================================
+cache:
+  enabled: true
+  positions:
+    ttl-hours: 24
+  snapshot:
+    ttl-hours: 4
+
+# =====================================================
+# BULK INSERT SETTINGS (Fix #5)
+# =====================================================
+bulk:
+  insert:
+    batch-size: 10000
+    use-copy: true
+
+# =====================================================
+# RESILIENCE4J CONFIGURATION (Fix #9)
+# =====================================================
 resilience4j:
   circuitbreaker:
     instances:
@@ -53,25 +104,83 @@ resilience4j:
         minimumNumberOfCalls: 5
         permittedNumberOfCallsInHalfOpenState: 3
         automaticTransitionFromOpenToHalfOpenEnabled: true
-        waitDurationInOpenState: 5s
+        waitDurationInOpenState: 30s
         failureRateThreshold: 50
+        eventConsumerBufferSize: 10
+
+  bulkhead:
+    instances:
+      mspm-service:
+        maxConcurrentCalls: 50
+        maxWaitDuration: 10s
+
+  ratelimiter:
+    instances:
+      mspm-service:
+        limitForPeriod: 100
+        limitRefreshPeriod: 1s
+        timeoutDuration: 5s
+
+  timelimiter:
+    instances:
+      mspm-service:
+        timeoutDuration: 30s
+        cancelRunningFuture: true
+
   retry:
     instances:
       mspm-service:
-        maxRetryAttempts: 3
+        maxAttempts: 3
         waitDuration: 2s
+        exponentialBackoffMultiplier: 2
+        retryExceptions:
+          - java.io.IOException
+          - java.net.SocketTimeoutException
+          - org.springframework.web.client.ResourceAccessException
 
-# Observability
+# =====================================================
+# ACTUATOR & METRICS (Fix #7)
+# =====================================================
 management:
   endpoints:
     web:
       exposure:
-        include: "health,metrics,prometheus,info"
+        include: health,metrics,prometheus,info
   endpoint:
     health:
-      probes:
-        enabled: true # K8s Liveness/Readiness probes
       show-details: always
-  tracing:
-    sampling:
-      probability: 1.0
+      show-components: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: positionloader
+      environment: ${ENVIRONMENT:dev}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        posloader.account.processing_time: true
+        posloader.mspm.fetch_time: true
+
+# =====================================================
+# LOGGING
+# =====================================================
+logging:
+  level:
+    root: INFO
+    com.vyshali.positionloader: DEBUG
+    io.github.resilience4j: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# =====================================================
+# FEATURE FLAGS
+# =====================================================
+features:
+  parallel-eod: true
+  validation: true
+  delta-calculation: false
+  bulk-insert: true
+  cache: true
+  graceful-degradation: true

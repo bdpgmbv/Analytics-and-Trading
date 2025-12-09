@@ -1,0 +1,201 @@
+# =====================================================
+# POSITION LOADER - PROMETHEUS ALERT RULES
+# Critical Fix #7: Business KPI Alerting
+# =====================================================
+
+groups:
+  - name: positionloader.eod.alerts
+    rules:
+      - alert: EodNotCompleteBy6PM
+        expr: |
+          (hour() >= 18 AND minute() >= 30) 
+          AND 
+          posloader_eod_last_success_count == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+          service: positionloader
+        annotations:
+          summary: "EOD not complete by 6:30 PM deadline"
+          description: "Position Loader EOD has not completed."
+
+      - alert: EodNotCompleteBy7PM
+        expr: |
+          (hour() >= 19) 
+          AND 
+          posloader_eod_last_success_count == 0
+        for: 5m
+        labels:
+          severity: page
+          team: ops
+          service: positionloader
+        annotations:
+          summary: "CRITICAL: EOD not complete by 7 PM"
+
+      - alert: AccountProcessingTooSlow
+        expr: |
+          histogram_quantile(0.95, 
+            rate(posloader_account_processing_time_seconds_bucket[5m])
+          ) > 10
+        for: 10m
+        labels:
+          severity: warning
+          team: dev
+        annotations:
+          summary: "Account processing P95 latency above 10 seconds"
+
+      - alert: HighAccountFailureRate
+        expr: |
+          rate(posloader_accounts_processed_total{status="failed"}[15m]) 
+          / 
+          rate(posloader_accounts_processed_total[15m]) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Account failure rate above 5%"
+
+      - alert: CriticalAccountFailureRate
+        expr: |
+          rate(posloader_accounts_processed_total{status="failed"}[15m]) 
+          / 
+          rate(posloader_accounts_processed_total[15m]) > 0.20
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL: Account failure rate above 20%"
+
+      - alert: ZeroPricesDetected
+        expr: |
+          increase(posloader_zero_price_detected_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Zero-price positions detected"
+
+      - alert: MassZeroPricesDetected
+        expr: |
+          increase(posloader_zero_price_detected_total[5m]) > 100
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL: Mass zero-price detection - Price Service likely DOWN"
+
+      - alert: HighValidationErrorRate
+        expr: |
+          rate(posloader_validation_issues{severity="error"}[15m]) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High validation error rate"
+
+      - alert: MspmHighLatency
+        expr: |
+          histogram_quantile(0.95, 
+            rate(posloader_mspm_fetch_time_seconds_bucket[5m])
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MSPM fetch latency above 5 seconds"
+
+      - alert: MspmHighFailureRate
+        expr: |
+          rate(posloader_mspm_failures_total[5m]) 
+          / 
+          rate(posloader_mspm_calls_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MSPM failure rate above 10%"
+
+      - alert: MspmCircuitBreakerOpen
+        expr: |
+          resilience4j_circuitbreaker_state{name="mspm-service"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MSPM circuit breaker is OPEN"
+
+      - alert: OrphanTradesDetected
+        expr: |
+          increase(trade_lifecycle_orphaned_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Orphan trades detected"
+
+      - alert: HighOrphanTradeRate
+        expr: |
+          increase(trade_lifecycle_orphaned_total[30m]) > 10
+        for: 5m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "CRITICAL: High orphan trade rate"
+
+      - alert: LowTradeFillRate
+        expr: |
+          rate(trade_lifecycle_filled_total[1h]) 
+          / 
+          rate(trade_lifecycle_sent_total[1h]) < 0.9
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Trade fill rate below 90%"
+
+      - alert: DbSaveLatencyHigh
+        expr: |
+          histogram_quantile(0.95, 
+            rate(posloader_db_save_time_seconds_bucket[5m])
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database save latency above 2 seconds"
+
+      - alert: LowCacheHitRate
+        expr: |
+          rate(posloader_cache_hits_total[15m]) 
+          / 
+          (rate(posloader_cache_hits_total[15m]) + rate(posloader_cache_misses_total[15m])) < 0.5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache hit rate below 50%"
+
+  - name: positionloader.eod.progress
+    rules:
+      - alert: EodStalled
+        expr: |
+          increase(posloader_accounts_processed_total[10m]) == 0
+          AND
+          posloader_eod_accounts_pending > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "EOD processing appears stalled"
+
+      - alert: EodRunningLong
+        expr: |
+          posloader_eod_last_duration_seconds > 3600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "EOD running longer than 1 hour"
