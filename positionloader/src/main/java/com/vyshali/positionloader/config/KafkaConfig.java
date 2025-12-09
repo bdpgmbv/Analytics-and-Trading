@@ -5,51 +5,63 @@ package com.vyshali.positionloader.config;
  * @author Vyshali Prabananth Lal
  */
 
-import com.vyshali.positionloader.dto.AccountSnapshotDTO;
+import com.vyshali.positionloader.dto.TradeEventDTO; // Changed from AccountSnapshot to TradeEvent for Intraday
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
-import org.springframework.kafka.core.ConsumerFactory;
-import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.*;
 import org.springframework.kafka.listener.*;
 import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.util.backoff.FixedBackOff;
 
+import java.util.HashMap;
+import java.util.Map;
+
 @Configuration
 public class KafkaConfig {
 
+    @Value("${spring.kafka.bootstrap-servers}")
+    private String bootstrapServers;
+
+    // 1. RECOVERER (Send to DLQ)
     @Bean
     public DeadLetterPublishingRecoverer recoverer(KafkaTemplate<Object, Object> template) {
         return new DeadLetterPublishingRecoverer(template);
     }
 
+    // 2. ERROR HANDLER (Retry 3x)
     @Bean
     public CommonErrorHandler errorHandler(DeadLetterPublishingRecoverer recoverer) {
         return new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3));
     }
 
+    // 3. CONSUMER FACTORY (JSON Support)
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, String> eodFactory(ConsumerFactory<String, String> cf, CommonErrorHandler errorHandler) {
-        ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
-        factory.setConsumerFactory(cf);
-        factory.setBatchListener(false);
-        factory.setCommonErrorHandler(errorHandler);
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
-        return factory;
+    public ConsumerFactory<String, TradeEventDTO> tradeConsumerFactory() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, TopicConstants.GROUP_INTRADAY);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+        props.put(ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS, JsonDeserializer.class.getName());
+        props.put(JsonDeserializer.TRUSTED_PACKAGES, "*"); // Trust all DTOs
+
+        return new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), new JsonDeserializer<>(TradeEventDTO.class));
     }
 
+    // 4. LISTENER CONTAINER (Intraday)
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, AccountSnapshotDTO> intradayFactory(ConsumerFactory<String, AccountSnapshotDTO> cf, CommonErrorHandler errorHandler) {
-        ConcurrentKafkaListenerContainerFactory<String, AccountSnapshotDTO> factory = new ConcurrentKafkaListenerContainerFactory<>();
+    public ConcurrentKafkaListenerContainerFactory<String, TradeEventDTO> intradayFactory(ConsumerFactory<String, TradeEventDTO> cf, CommonErrorHandler errorHandler) {
 
-        // Note: In a real bean we would define specific ConsumerFactory for JSON.
-        // For brevity, we assume listener payload conversion is handled or default CF is overridden.
+        ConcurrentKafkaListenerContainerFactory<String, TradeEventDTO> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(cf);
-        factory.setBatchListener(true);
-        factory.setConcurrency(3);
+        factory.setBatchListener(false); // We process trades one by one usually, or true if bulk
         factory.setCommonErrorHandler(errorHandler);
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
         return factory;
     }
 }
