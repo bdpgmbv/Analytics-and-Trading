@@ -11,6 +11,7 @@ import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Date;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -19,16 +20,16 @@ import java.util.List;
 @Repository
 @RequiredArgsConstructor
 public class PriceRepository {
+
     private final JdbcTemplate jdbcTemplate;
 
     public void batchInsertPrices(List<PriceTickDTO> ticks) {
-        String sql = "INSERT INTO Prices (product_id, price_source, price_date, price_value) VALUES (?, ?, ?, ?)";
-        jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
+        jdbcTemplate.batchUpdate(PriceSql.INSERT_PRICE, new BatchPreparedStatementSetter() {
             @Override
             public void setValues(PreparedStatement ps, int i) throws SQLException {
                 PriceTickDTO tick = ticks.get(i);
                 ps.setInt(1, tick.productId());
-                ps.setString(2, tick.source());
+                ps.setString(2, "REALTIME");
                 ps.setTimestamp(3, Timestamp.from(tick.timestamp()));
                 ps.setBigDecimal(4, tick.price());
             }

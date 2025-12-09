@@ -1,0 +1,25 @@
+# Global settings
+replicaCount: 2 # High Availability for the "Front Door"
+
+image:
+  repository: my-registry/gateway
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: LoadBalancer # <--- CRITICAL: This exposes the bank to the internet
+  port: 8080
+
+resources:
+  requests:
+    memory: "1Gi" # Gateways need high RAM for caching/Netty
+    cpu: "1000m"
+  limits:
+    memory: "2Gi"
+    cpu: "2000m"
+
+env:
+  SPRING_PROFILES_ACTIVE: "prod"
+  # Service Discovery: Point to K8s Service Names
+  KEYCLOAK_URI: "http://keycloak-http.auth-ns.svc.cluster.local:8080"
+  REDIS_HOST: "redis-master.data-ns.svc.cluster.local"

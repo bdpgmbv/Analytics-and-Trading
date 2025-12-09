@@ -12,10 +12,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
-import java.sql.Date;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.time.LocalDate;
 import java.util.List;
 
 @Repository
@@ -24,53 +22,23 @@ public class TransactionRepository {
 
     private final JdbcTemplate jdbcTemplate;
 
-    public void deleteTransactionsByAccount(Integer accountId) {
-        jdbcTemplate.update("DELETE FROM Transactions WHERE account_id = ?", accountId);
-    }
-
-    /**
-     * Looks up the quantity of a previously booked trade.
-     * Used for Reversals (Amend/Cancel).
-     */
-    public BigDecimal findQuantityByRefId(String externalRefId) {
-        String sql = "SELECT quantity FROM Transactions WHERE external_ref_id = ?";
-        try {
-            return jdbcTemplate.queryForObject(sql, BigDecimal.class, externalRefId);
-        } catch (Exception e) {
-            return BigDecimal.ZERO; // Or throw exception if strict
-        }
-    }
-
     public void batchInsertTransactions(Integer accountId, List<PositionDetailDTO> positions) {
-        String sql = """
-                    INSERT INTO Transactions (
-                        transaction_id, account_id, product_id, txn_type, 
-                        trade_date, quantity, price, cost_local, 
-                        external_ref_id, created_at
-                    ) VALUES (
-                        nextval('position_seq'), ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
-                    )
-                    ON CONFLICT (external_ref_id) DO NOTHING 
-                """;
-
-        jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
+        jdbcTemplate.batchUpdate(TransactionSql.INSERT_TXN, new BatchPreparedStatementSetter() {
             @Override
             public void setValues(PreparedStatement ps, int i) throws SQLException {
                 PositionDetailDTO p = positions.get(i);
-                BigDecimal price = p.price() != null ? p.price() : BigDecimal.ZERO;
-                BigDecimal cost = p.quantity().multiply(price);
+                // Simple hash for ID generation if not provided (demo logic)
+                long txnId = System.nanoTime() + i;
 
-                ps.setInt(1, accountId);
-                ps.setInt(2, p.productId());
-                String type = (p.txnType() != null && !p.txnType().isEmpty()) ? p.txnType() : "EOD_LOAD";
-                ps.setString(3, type);
-                ps.setDate(4, Date.valueOf(LocalDate.now()));
-                ps.setBigDecimal(5, p.quantity());
-                ps.setBigDecimal(6, price);
-                ps.setBigDecimal(7, cost);
-                // Handle legacy or null refIds
-                String refId = (p.externalRefId() != null) ? p.externalRefId() : "LEGACY-" + System.nanoTime() + "-" + i;
-                ps.setString(8, refId);
+                ps.setLong(1, txnId);
+                ps.setInt(2, accountId);
+                ps.setInt(3, p.productId());
+                ps.setString(4, "OPENING_LOAD"); // Default type for EOD
+                ps.setDate(5, java.sql.Date.valueOf(java.time.LocalDate.now()));
+                ps.setBigDecimal(6, p.quantity());
+                ps.setBigDecimal(7, p.price());
+                ps.setBigDecimal(8, p.quantity().multiply(p.price() != null ? p.price() : BigDecimal.ZERO));
+                ps.setString(9, "MSPM-EOD-" + accountId + "-" + p.productId()); // Dedup key
             }
 
             @Override
@@ -78,5 +46,13 @@ public class TransactionRepository {
                 return positions.size();
             }
         });
+    }
+
+    public BigDecimal findQuantityByRefId(String refId) {
+        try {
+            return jdbcTemplate.queryForObject(TransactionSql.FIND_QTY_BY_REF, BigDecimal.class, refId);
+        } catch (Exception e) {
+            return BigDecimal.ZERO;
+        }
     }
 }

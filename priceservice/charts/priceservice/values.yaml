@@ -1,0 +1,29 @@
+replicaCount: 2
+
+image:
+  repository: my-registry/priceservice
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# State management for Sharding
+statefulSet:
+  enabled: true # Guarantees pod-0, pod-1 names
+
+resources:
+  requests:
+    memory: "1Gi" # Pricing is memory intensive (Cache)
+    cpu: "2000m" # Pricing is CPU intensive (Math)
+  limits:
+    memory: "2Gi"
+    cpu: "4000m"
+
+env:
+  SPRING_PROFILES_ACTIVE: "prod"
+  SPRING_DATA_REDIS_HOST: "redis-master.data-ns.svc.cluster.local"
+  # Sharding: This is usually injected dynamically by the K8s StatefulSet ordinal
+  # but defaults can be set here.
+  TOTAL_SHARDS: "2"
