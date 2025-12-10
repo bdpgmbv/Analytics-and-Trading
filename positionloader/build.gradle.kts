@@ -1,12 +1,6 @@
-/*
- * Position Loader - Build Configuration
- * 12/10/2025 - Complete with all performance and testing dependencies
- * Author: Vyshali Prabananth Lal
- */
-
 plugins {
     java
-    id("org.springframework.boot") version "3.2.0"
+    id("org.springframework.boot") version "3.2.3"
     id("io.spring.dependency-management") version "1.1.4"
     jacoco
 }
@@ -36,6 +30,10 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-aop")
+
+    // FIXED: Added Spring Security (required by SecurityConfig.java)
+    implementation("org.springframework.boot:spring-boot-starter-security")
+    implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
 
     // ==================== CACHING ====================
     implementation("org.springframework.boot:spring-boot-starter-cache")
@@ -78,9 +76,14 @@ dependencies {
     // ==================== API DOCS (Optional) ====================
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0")
 
+    // ==================== LOGGING ====================
+    // FIXED: Added Logstash encoder (required by logback-spring.xml for JSON logging)
+    implementation("net.logstash.logback:logstash-logback-encoder:7.4")
+
     // ==================== TEST DEPENDENCIES ====================
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.kafka:spring-kafka-test")
+    testImplementation("org.springframework.security:spring-security-test")
 
     // Testcontainers
     testImplementation("org.testcontainers:testcontainers:1.19.3")
@@ -97,6 +100,12 @@ dependencies {
     // Mockito
     testImplementation("org.mockito:mockito-core:5.8.0")
     testImplementation("org.mockito:mockito-junit-jupiter:5.8.0")
+
+    // FIXED: Added ArchUnit (required by ArchitectureTest.java)
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.2.1")
+
+    // FIXED: Added Pact (required by MspmContractTest.java)
+    testImplementation("au.com.dius.pact.consumer:junit5:4.6.5")
 }
 
 tasks.withType<Test> {

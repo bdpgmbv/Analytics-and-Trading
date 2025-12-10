@@ -1,14 +1,20 @@
 package com.vyshali.positionloader.controller;
 
 /*
- * 12/10/2025 - FIXED: Removed Swagger dependency, all methods now compile
+ * 12/10/2025 - FIXED: Removed direct PositionRepository dependency
+ *
+ * ARCHITECTURE FIX:
+ * - Removed PositionRepository injection (violates controller->repository rule)
+ * - Added PositionQueryService for bitemporal queries
+ * - Controllers should only depend on Services, not Repositories
+ *
  * @author Vyshali Prabananth Lal
  */
 
 import com.vyshali.positionloader.dto.AccountSnapshotDTO;
 import com.vyshali.positionloader.repository.AuditRepository;
-import com.vyshali.positionloader.repository.PositionRepository;
 import com.vyshali.positionloader.service.EventService;
+import com.vyshali.positionloader.service.PositionQueryService;
 import com.vyshali.positionloader.service.SnapshotService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,7 +25,6 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
-import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.UUID;
@@ -27,6 +32,8 @@ import java.util.UUID;
 /**
  * Operations controller with maker-checker pattern.
  * Includes audit queries and DLQ replay.
+ * <p>
+ * FIXED: Now uses PositionQueryService instead of directly injecting PositionRepository
  */
 @Slf4j
 @RestController
@@ -37,7 +44,8 @@ public class OpsController {
     private final SnapshotService snapshotService;
     private final EventService eventService;
     private final AuditRepository audit;
-    private final PositionRepository positions;
+    // FIXED: Replaced PositionRepository with PositionQueryService
+    private final PositionQueryService positionQueryService;
 
     // ==================== MAKER-CHECKER EOD ====================
 
@@ -138,10 +146,13 @@ public class OpsController {
 
     // ==================== AUDIT QUERIES ====================
 
+    /**
+     * FIXED: Now uses PositionQueryService instead of directly calling PositionRepository
+     */
     @GetMapping("/audit/position/as-of")
     public ResponseEntity<BigDecimal> getPositionAsOf(@RequestParam Integer accountId, @RequestParam Integer productId, @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime businessDate, @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime systemTime) {
 
-        BigDecimal qty = positions.getQuantityAsOf(accountId, productId, Timestamp.valueOf(businessDate), Timestamp.valueOf(systemTime));
+        BigDecimal qty = positionQueryService.getQuantityAsOf(accountId, productId, businessDate, systemTime);
 
         return ResponseEntity.ok(qty);
     }

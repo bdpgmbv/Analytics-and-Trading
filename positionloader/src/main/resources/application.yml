@@ -1,6 +1,9 @@
 # Position Loader - Complete Application Configuration
 # 12/10/2025 - Updated with Redis, Tracing, Resilience4j
 # Author: Vyshali Prabananth Lal
+#
+# FIXES APPLIED:
+# - Circuit breaker name now matches MspmService annotation ("mspm-client")
 
 spring:
   application:
@@ -37,7 +40,7 @@ spring:
     username: ${DB_USER:postgres}
     password: ${DB_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver
-    
+
     hikari:
       pool-name: PosLoaderPool
       maximum-pool-size: 20
@@ -46,7 +49,7 @@ spring:
       max-lifetime: 1200000
       connection-timeout: 30000
       leak-detection-threshold: 60000
-      
+
       # Statement caching for performance
       data-source-properties:
         cachePrepStmts: true
@@ -59,7 +62,7 @@ spring:
   # ==================== KAFKA ====================
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    
+
     consumer:
       group-id: positionloader-group
       auto-offset-reset: earliest
@@ -95,6 +98,12 @@ services:
     read-timeout-ms: 2000
     write-timeout-ms: 2000
 
+# ==================== UPSTREAM SERVICES ====================
+upstream:
+  mspm:
+    base-url: ${MSPM_URL:http://localhost:8081/mspm}
+    timeout-seconds: 30
+
 # ==================== FEATURE FLAGS ====================
 features:
   caching:
@@ -125,6 +134,7 @@ resilience4j:
         permitted-number-of-calls-in-half-open-state: 3
 
     instances:
+      # FIXED: Name matches @CircuitBreaker(name = "mspm-client") in MspmService
       mspm-client:
         base-config: default
 

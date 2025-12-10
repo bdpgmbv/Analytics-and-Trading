@@ -1,13 +1,13 @@
 package com.vyshali.positionloader.service;
 
 /*
- * 12/10/2025 - FIXED: Corrected class references and method signatures
+ * 12/10/2025 - FIXED: Now properly publishes domain events
  *
  * Changes:
- * - MspmClient -> MspmService (actual class name)
- * - PositionDto -> PositionDTO (actual class name)
- * - Removed non-existent MspmPositionResponse
- * - Added missing methods referenced by tests and controllers
+ * - ApplicationEventPublisher is now actually used
+ * - Publishes EodStarted, EodCompleted, EodFailed events
+ * - Publishes PositionsUpdated, ValidationIssueDetected events
+ * - DomainEventListeners will now receive these events
  *
  * @author Vyshali Prabananth Lal
  */
@@ -27,13 +27,10 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 @Slf4j
 @Service
@@ -46,7 +43,7 @@ public class SnapshotService {
     private final AuditRepository audit;
     private final KafkaTemplate<String, Object> kafka;
     private final ObjectMapper json;
-    private final ApplicationEventPublisher events;
+    private final ApplicationEventPublisher eventPublisher;  // FIXED: Now actually used
 
     // ==================== EOD PROCESSING ====================
 
@@ -57,40 +54,62 @@ public class SnapshotService {
     @Transactional
     public void processEod(Integer accountId) {
         long startTime = System.currentTimeMillis();
+        LocalDate businessDate = LocalDate.now();
+        Integer clientId = null;
+
         log.info("Starting EOD for account {}", accountId);
 
-        // 1. Fetch from MSPM
-        AccountSnapshotDTO snapshot = mspmService.fetchSnapshot(accountId);
-        if (snapshot == null) {
-            throw new RuntimeException("MSPM returned null for account " + accountId);
+        try {
+            // FIXED: Publish EodStarted event
+            eventPublisher.publishEvent(new EodStarted(accountId, null, businessDate));
+
+            // 1. Fetch from MSPM
+            AccountSnapshotDTO snapshot = mspmService.fetchSnapshot(accountId);
+            if (snapshot == null) {
+                throw new RuntimeException("MSPM returned null for account " + accountId);
+            }
+            clientId = snapshot.clientId();
+
+            // 2. Ensure reference data exists
+            refData.ensureReferenceData(snapshot);
+
+            // 3. Create new batch
+            int batchId = positions.createBatch(accountId);
+
+            // 4. Filter and insert positions
+            int positionCount = 0;
+            if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
+                List<PositionDTO> validPositions = filterValidPositions(snapshot.positions(), accountId);
+                positions.insertPositions(accountId, validPositions, "MSPM_EOD", batchId);
+                positionCount = validPositions.size();
+            }
+
+            // 5. Activate batch (atomic swap)
+            positions.activateBatch(accountId, batchId);
+
+            // 6. Mark account complete
+            audit.markAccountComplete(accountId, snapshot.clientId(), businessDate);
+
+            // 7. Publish Kafka events
+            long duration = System.currentTimeMillis() - startTime;
+            publishPositionChangeEvent(accountId, snapshot.clientId(), "EOD_COMPLETE", positionCount);
+
+            // FIXED: Publish EodCompleted domain event
+            eventPublisher.publishEvent(new EodCompleted(accountId, snapshot.clientId(), businessDate, positionCount, duration));
+
+            // FIXED: Publish PositionsUpdated event
+            eventPublisher.publishEvent(new PositionsUpdated(accountId, snapshot.clientId(), "EOD", positionCount, batchId));
+
+            // 8. Check for client sign-off
+            checkAndPublishClientSignOff(snapshot.clientId(), businessDate);
+
+            log.info("EOD complete for account {} in {}ms", accountId, duration);
+
+        } catch (Exception e) {
+            // FIXED: Publish EodFailed event
+            eventPublisher.publishEvent(new EodFailed(accountId, clientId, businessDate, e.getMessage(), e.getClass().getSimpleName()));
+            throw e;
         }
-
-        // 2. Ensure reference data exists
-        refData.ensureReferenceData(snapshot);
-
-        // 3. Create new batch
-        int batchId = positions.createBatch(accountId);
-
-        // 4. Filter and insert positions
-        if (snapshot.positions() != null && !snapshot.positions().isEmpty()) {
-            List<PositionDTO> validPositions = filterValidPositions(snapshot.positions(), accountId);
-            positions.insertPositions(accountId, validPositions, "MSPM_EOD", batchId);
-        }
-
-        // 5. Activate batch (atomic swap)
-        positions.activateBatch(accountId, batchId);
-
-        // 6. Mark account complete
-        audit.markAccountComplete(accountId, snapshot.clientId(), LocalDate.now());
-
-        // 7. Publish events
-        long duration = System.currentTimeMillis() - startTime;
-        publishPositionChangeEvent(accountId, snapshot.clientId(), "EOD_COMPLETE", snapshot.positionCount());
-
-        // 8. Check for client sign-off
-        checkAndPublishClientSignOff(snapshot.clientId());
-
-        log.info("EOD complete for account {} in {}ms", accountId, duration);
     }
 
     // ==================== INTRADAY PROCESSING ====================
@@ -118,8 +137,12 @@ public class SnapshotService {
                 }
             }
 
-            // Publish event
+            // Publish Kafka event
             publishPositionChangeEvent(snapshot.accountId(), snapshot.clientId(), "INTRADAY", snapshot.positionCount());
+
+            // FIXED: Publish PositionsUpdated domain event
+            Integer batchId = positions.getActiveBatchId(snapshot.accountId());
+            eventPublisher.publishEvent(new PositionsUpdated(snapshot.accountId(), snapshot.clientId(), "INTRADAY", snapshot.positionCount(), batchId != null ? batchId : 0));
         }
     }
 
@@ -168,8 +191,14 @@ public class SnapshotService {
         // Audit log
         audit.log("MANUAL_UPLOAD", snapshot.accountId().toString(), user, String.format("Uploaded %d positions", snapshot.positionCount()));
 
-        // Publish event
+        // Publish Kafka event
         publishPositionChangeEvent(snapshot.accountId(), snapshot.clientId(), "MANUAL_UPLOAD", snapshot.positionCount());
+
+        // FIXED: Publish PositionsUpdated domain event
+        eventPublisher.publishEvent(new PositionsUpdated(snapshot.accountId(), snapshot.clientId(), "MANUAL_UPLOAD", snapshot.positionCount(), batchId));
+
+        // FIXED: Publish audit event
+        eventPublisher.publishEvent(new AuditEvent("MANUAL_UPLOAD", "ACCOUNT", snapshot.accountId().toString(), user, String.format("Uploaded %d positions", snapshot.positionCount())));
     }
 
     // ==================== HELPER METHODS ====================
@@ -180,12 +209,14 @@ public class SnapshotService {
     private List<PositionDTO> filterValidPositions(List<PositionDTO> positions, Integer accountId) {
         List<PositionDTO> valid = new ArrayList<>();
         int zeroPriceCount = 0;
+        List<String> zeroPriceProducts = new ArrayList<>();
 
         for (PositionDTO pos : positions) {
             if (pos == null) continue;
 
             if (pos.hasZeroPrice()) {
                 zeroPriceCount++;
+                zeroPriceProducts.add(String.valueOf(pos.productId()));
                 log.warn("Zero price for product {} in account {}", pos.productId(), accountId);
             }
             valid.add(pos);
@@ -193,6 +224,9 @@ public class SnapshotService {
 
         if (zeroPriceCount > 0) {
             log.warn("Account {} has {} zero-price positions", accountId, zeroPriceCount);
+
+            // FIXED: Publish ValidationIssueDetected event
+            eventPublisher.publishEvent(new ValidationIssueDetected(accountId, "ZERO_PRICE", zeroPriceCount, zeroPriceProducts));
         }
 
         return valid;
@@ -209,13 +243,20 @@ public class SnapshotService {
     /**
      * Check if all accounts for client are complete and publish sign-off.
      */
-    private void checkAndPublishClientSignOff(Integer clientId) {
+    private void checkAndPublishClientSignOff(Integer clientId, LocalDate businessDate) {
         if (clientId == null) return;
 
-        if (audit.isClientComplete(clientId, LocalDate.now())) {
+        if (audit.isClientComplete(clientId, businessDate)) {
             int accountCount = audit.countClientAccounts(clientId);
-            Events.ClientSignOff signOff = new Events.ClientSignOff(clientId, LocalDate.now(), accountCount);
+
+            // Kafka event
+            Events.ClientSignOff signOff = new Events.ClientSignOff(clientId, businessDate, accountCount);
             kafka.send("CLIENT_REPORTING_SIGNOFF", clientId.toString(), signOff);
+
+            // FIXED: Publish ClientSignOffCompleted domain event
+            eventPublisher.publishEvent(new ClientSignOffCompleted(clientId, businessDate, accountCount, 0  // Total duration not tracked at this level
+            ));
+
             log.info("Client {} sign-off published ({} accounts)", clientId, accountCount);
         }
     }
