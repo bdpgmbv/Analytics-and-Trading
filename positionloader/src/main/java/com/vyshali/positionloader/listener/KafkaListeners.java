@@ -5,25 +5,23 @@ package com.vyshali.positionloader.listener;
  * @author Vyshali Prabananth Lal
  */
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vyshali.positionloader.config.KafkaConfig;
-import com.vyshali.positionloader.dto.AccountSnapshotDTO;
-import com.vyshali.positionloader.dto.TradeEventDTO;
-import com.vyshali.positionloader.repository.TransactionRepository;
 import com.vyshali.positionloader.service.SnapshotService;
-import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
-import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
 /**
- * All Kafka listeners in one place.
+ * Kafka listeners for Position Loader.
+ * <p>
+ * Two flows:
+ * 1. EOD Trigger from MSPM (after market close) - receives account ID
+ * 2. Intraday Batches from MSPA (throughout the day) - 1-100 transactions per batch
  */
 @Slf4j
 @Component
@@ -31,71 +29,56 @@ import java.util.List;
 public class KafkaListeners {
 
     private final SnapshotService snapshotService;
-    private final TransactionRepository transactions;
-    private final ObjectMapper json;
 
-    // ==================== EOD TRIGGER ====================
-
+    /**
+     * EOD Trigger from MSPM.
+     * Receives: Account ID (string)
+     * Action: Fetch full snapshot from MSPM REST API and save to DB
+     */
     @KafkaListener(topics = KafkaConfig.TOPIC_EOD_TRIGGER, groupId = KafkaConfig.GROUP_EOD, containerFactory = "eodFactory")
     public void onEodTrigger(ConsumerRecord<String, String> record, Acknowledgment ack) {
+        String accountIdStr = record.value();
+        log.info("EOD trigger received: account={}", accountIdStr);
+
         try {
-            Integer accountId = Integer.parseInt(record.value());
-            log.info("EOD trigger for account {}", accountId);
-
+            Integer accountId = Integer.parseInt(accountIdStr);
             snapshotService.processEod(accountId);
-
             ack.acknowledge();
-            log.info("EOD complete for account {}", accountId);
+            log.info("EOD complete: account={}", accountId);
 
         } catch (NumberFormatException e) {
-            log.error("Invalid account ID: {}", record.value());
+            log.error("Invalid account ID in EOD trigger: {}", accountIdStr);
             ack.acknowledge(); // Don't retry bad data
+
         } catch (Exception e) {
-            log.error("EOD failed for {}: {}", record.value(), e.getMessage());
-            throw new RuntimeException("EOD failed", e); // Goes to DLQ
+            log.error("EOD failed: account={}, error={}", accountIdStr, e.getMessage());
+            throw e; // Goes to DLQ after retries
         }
     }
 
-    // ==================== INTRADAY BATCH ====================
-
+    /**
+     * Intraday Batches from MSPA.
+     * Receives: Batch of 1-100 JSON records (AccountSnapshotDTO format)
+     * Action: Update positions incrementally
+     */
     @KafkaListener(topics = KafkaConfig.TOPIC_INTRADAY, groupId = KafkaConfig.GROUP_INTRADAY, containerFactory = "batchFactory")
     public void onIntradayBatch(List<ConsumerRecord<String, String>> records, Acknowledgment ack) {
-        log.info("Intraday batch: {} records", records.size());
+        log.info("Intraday batch received: {} records", records.size());
 
-        int success = 0, failed = 0;
+        int success = 0;
+        int failed = 0;
 
-        for (var record : records) {
+        for (ConsumerRecord<String, String> record : records) {
             try {
-                AccountSnapshotDTO dto = json.readValue(record.value(), AccountSnapshotDTO.class);
-                snapshotService.processIntraday(dto);
+                snapshotService.processIntradayRecord(record.value());
                 success++;
             } catch (Exception e) {
                 failed++;
-                log.error("Batch item failed at offset {}: {}", record.offset(), e.getMessage());
+                log.error("Intraday record failed: offset={}, error={}", record.offset(), e.getMessage());
             }
         }
 
-        log.info("Intraday batch: {} success, {} failed", success, failed);
-
-        if (failed > 0 && success == 0) {
-            throw new RuntimeException("Entire batch failed"); // Goes to DLQ
-        }
-
+        log.info("Intraday batch complete: success={}, failed={}", success, failed);
         ack.acknowledge();
-    }
-
-    // ==================== TRADE EVENTS ====================
-
-    @KafkaListener(topics = KafkaConfig.TOPIC_INTRADAY, groupId = "positionloader-trades", containerFactory = "tradeFactory")
-    public void onTradeEvent(@Payload @Valid TradeEventDTO event) {
-        log.info("Trade event: {} for account {}", event.transactionId(), event.accountId());
-
-        // Idempotency check
-        if (transactions.exists(event.transactionId())) {
-            log.warn("Duplicate trade {}, skipping", event.transactionId());
-            return;
-        }
-
-        snapshotService.processTrade(event);
     }
 }
