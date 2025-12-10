@@ -21,6 +21,13 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
 
+    // ==================== CACHING (NEW) ====================
+    // Caffeine: High-performance local cache
+    // - 10x faster than Redis for local lookups
+    // - Perfect for reference data (Clients, Funds, Products)
+    implementation("org.springframework.boot:spring-boot-starter-cache")
+    implementation("com.github.ben-manes.caffeine:caffeine")
+
     // ==================== SECURITY ====================
     implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
 
@@ -36,12 +43,12 @@ dependencies {
 
     // ==================== OBSERVABILITY ====================
     implementation("io.micrometer:micrometer-registry-prometheus")
-    // ADDED: Distributed tracing (required for trace propagation)
+    // Distributed tracing (required for trace propagation)
     implementation("io.micrometer:micrometer-tracing-bridge-brave")
     implementation("io.zipkin.reporter2:zipkin-reporter-brave")
 
     // ==================== API DOCUMENTATION ====================
-    // ADDED: OpenAPI/Swagger
+    // OpenAPI/Swagger
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0")
 
     // ==================== LOMBOK ====================
@@ -52,20 +59,23 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.kafka:spring-kafka-test")
 
-    // ADDED: Better assertions
+    // Better assertions
     testImplementation("org.assertj:assertj-core:3.25.3")
 
-    // ADDED: Testcontainers for real DB/Kafka testing
+    // Testcontainers for real DB/Kafka testing
     testImplementation("org.testcontainers:testcontainers:1.19.7")
     testImplementation("org.testcontainers:junit-jupiter:1.19.7")
     testImplementation("org.testcontainers:postgresql:1.19.7")
     testImplementation("org.testcontainers:kafka:1.19.7")
 
-    // ADDED: Contract testing (already had Pact)
+    // Contract testing
     testImplementation("au.com.dius.pact.consumer:junit5:4.6.7")
 
-    // ADDED: Architecture testing
+    // Architecture testing
     testImplementation("com.tngtech.archunit:archunit-junit5:1.2.1")
+
+    // Awaitility for async testing
+    testImplementation("org.awaitility:awaitility:4.2.0")
 }
 
 // ==================== JACOCO COVERAGE ====================
@@ -97,9 +107,7 @@ tasks.jacocoTestCoverageVerification {
         rule {
             element = "CLASS"
             excludes = listOf(
-                "*.dto.*",
-                "*.config.*",
-                "*Application"
+                "*.dto.*", "*.config.*", "*Application"
             )
             limit {
                 counter = "LINE"

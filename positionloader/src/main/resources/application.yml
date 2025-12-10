@@ -2,35 +2,89 @@ spring:
   application:
     name: positionloader
 
-  # Database
+  # ==================== VIRTUAL THREADS (NEW) ====================
+  # Java 21 feature: Lightweight threads for better concurrency
+  # Impact: Better throughput under concurrent load
+  threads:
+    virtual:
+      enabled: true
+
+  # ==================== CACHING (NEW) ====================
+  cache:
+    type: caffeine
+    caffeine:
+      # Default spec - overridden per-cache in CacheConfig.java
+      spec: maximumSize=10000,expireAfterWrite=30m
+
+  # ==================== DATABASE ====================
   datasource:
     url: jdbc:postgresql://${DB_HOST:localhost}:5432/${DB_NAME:analyticsandtrading}
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:password}
+    driver-class-name: org.postgresql.Driver
+
+    # ==================== CONNECTION POOL TUNING (UPDATED) ====================
     hikari:
+      # Pool sizing
       maximum-pool-size: 20
       minimum-idle: 5
 
-  # Kafka
+      # Timeouts
+      connection-timeout: 5000      # 5 seconds to get connection
+      validation-timeout: 3000      # 3 seconds for validation query
+      idle-timeout: 300000          # 5 minutes idle before eviction
+      max-lifetime: 1800000         # 30 minutes max connection lifetime
+
+      # Leak detection (P1 fix)
+      leak-detection-threshold: 60000  # Log warning if connection held > 60s
+
+      # PostgreSQL-specific optimizations
+      data-source-properties:
+        # Statement caching - reuse prepared statements
+        prepStmtCacheSize: 250
+        prepStmtCacheSqlLimit: 2048
+        useServerPrepStmts: true
+
+        # CRITICAL: Enable batch rewrite for 5-10x faster batch inserts
+        rewriteBatchedStatements: true
+
+        # Connection validation
+        cachePrepStmts: true
+
+        # TCP keepalive to prevent connection drops
+        tcpKeepAlive: true
+
+  # ==================== KAFKA ====================
   kafka:
     bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      # Producer tuning
+      acks: all                     # Wait for all replicas
+      retries: 3                    # Retry failed sends
+      properties:
+        enable.idempotence: true    # Exactly-once semantics
+        max.in.flight.requests.per.connection: 5
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false     # Manual acknowledgment
+      properties:
+        max.poll.records: 500       # Batch size for intraday
 
-  # File Upload
+  # ==================== FILE UPLOAD ====================
   servlet:
     multipart:
       max-file-size: 10MB
       max-request-size: 10MB
 
-# Upstream MSPM Service
+# ==================== UPSTREAM MSPM SERVICE ====================
 upstream:
   mspm:
     base-url: ${MSPM_BASE_URL:http://localhost:8081/mspm}
     timeout-seconds: 30
 
-# Resilience4j Circuit Breaker
+# ==================== RESILIENCE4J CIRCUIT BREAKER ====================
 resilience4j:
   circuitbreaker:
     instances:
@@ -38,19 +92,143 @@ resilience4j:
         sliding-window-size: 10
         failure-rate-threshold: 50
         wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        slow-call-duration-threshold: 5s
+        slow-call-rate-threshold: 50
+  retry:
+    instances:
+      mspm-service:
+        max-attempts: 3
+        wait-duration: 1s
+        retry-exceptions:
+          - java.io.IOException
+          - java.net.SocketTimeoutException
 
-# Actuator
+# ==================== ACTUATOR ====================
 management:
   endpoints:
     web:
       exposure:
-        include: health,metrics,prometheus
+        include: health,metrics,prometheus,caches,info
   endpoint:
     health:
       show-details: always
+    caches:
+      enabled: true   # Enable cache metrics endpoint
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    export:
+      prometheus:
+        enabled: true
 
-# Logging
+# ==================== LOGGING ====================
 logging:
   level:
     root: INFO
     com.vyshali.positionloader: DEBUG
+    # Cache debugging (enable temporarily to verify cache hits)
+    # org.springframework.cache: TRACE
+    # com.github.benmanes.caffeine: DEBUG
+
+    # SQL debugging (enable temporarily for query analysis)
+    # org.springframework.jdbc.core: DEBUG
+
+# ==================== FEATURE FLAGS ====================
+features:
+  # Enable/disable caching (for A/B testing impact)
+  caching:
+    enabled: true
+  # Enable idempotency checking
+  idempotency:
+    enabled: true
+    ttl-minutes: 60
+
+---
+# ==================== LOCAL PROFILE ====================
+spring:
+  config:
+    activate:
+      on-profile: local
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/analyticsandtrading
+    username: postgres
+    password: password
+
+  kafka:
+    bootstrap-servers: localhost:9092
+
+upstream:
+  mspm:
+    base-url: http://localhost:8081/mspm
+
+logging:
+  level:
+    com.vyshali.positionloader: DEBUG
+
+---
+# ==================== DOCKER PROFILE ====================
+spring:
+  config:
+    activate:
+      on-profile: docker
+
+  datasource:
+    url: jdbc:postgresql://postgres:5432/analyticsandtrading
+
+  kafka:
+    bootstrap-servers: kafka:29092
+
+upstream:
+  mspm:
+    base-url: http://mock-upstream:8081/mspm
+
+---
+# ==================== PRODUCTION PROFILE ====================
+spring:
+  config:
+    activate:
+      on-profile: prod
+    import: "vault://"
+
+  cloud:
+    vault:
+      authentication: KUBERNETES
+      application-name: positionloader
+      kv:
+        enabled: true
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST}:5432/${DB_NAME}
+    # Credentials from Vault
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 10
+
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS}
+    producer:
+      acks: all
+    consumer:
+      properties:
+        max.poll.records: 1000
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI}
+
+upstream:
+  mspm:
+    base-url: ${MSPM_BASE_URL}
+    timeout-seconds: 15
+
+logging:
+  level:
+    root: WARN
+    com.vyshali.positionloader: INFO
+
+# Production cache settings - larger sizes
+spring.cache.caffeine.spec: maximumSize=50000,expireAfterWrite=30m
