@@ -1,7 +1,10 @@
 package com.vyshali.positionloader.service;
 
 /*
- * 12/10/2025 - 2:37 PM
+ * 12/10/2025 - FIXED: Added missing methods:
+ * - recordIntradayUpdate(int count)
+ * - recordEodSnapshot(int count)
+ *
  * @author Vyshali Prabananth Lal
  */
 
@@ -13,7 +16,6 @@ import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
 
-import java.time.LocalDate;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -35,6 +37,8 @@ public class MetricsService {
     private Counter validationErrors;
     private Counter mspmCalls;
     private Counter mspmFailures;
+    private Counter intradayUpdates;
+    private Counter eodSnapshots;
 
     // Timers
     private Timer accountProcessingTimer;
@@ -51,7 +55,7 @@ public class MetricsService {
 
     @PostConstruct
     public void init() {
-        // Gauges - match prometheus-alerts.yml
+        // Gauges
         Gauge.builder("posloader_eod_accounts_pending", eodAccountsPending, AtomicInteger::get).description("Number of accounts pending EOD processing").register(registry);
 
         Gauge.builder("posloader_eod_accounts_completed", eodAccountsCompleted, AtomicInteger::get).description("Number of accounts completed EOD today").register(registry);
@@ -72,6 +76,11 @@ public class MetricsService {
         mspmCalls = Counter.builder("posloader_mspm_calls_total").description("Total MSPM API calls").register(registry);
 
         mspmFailures = Counter.builder("posloader_mspm_failures_total").description("Total MSPM API failures").register(registry);
+
+        // NEW: Intraday and EOD counters
+        intradayUpdates = Counter.builder("posloader_intraday_updates_total").description("Total intraday position updates").register(registry);
+
+        eodSnapshots = Counter.builder("posloader_eod_snapshots_total").description("Total EOD snapshots saved").register(registry);
 
         cacheHits = Counter.builder("posloader_cache_hits_total").description("Cache hits").register(registry);
 
@@ -164,5 +173,21 @@ public class MetricsService {
 
     public void recordCacheMiss() {
         cacheMisses.increment();
+    }
+
+    // ==================== NEW: Intraday & EOD ====================
+
+    /**
+     * Record intraday position update count.
+     */
+    public void recordIntradayUpdate(int count) {
+        intradayUpdates.increment(count);
+    }
+
+    /**
+     * Record EOD snapshot saved.
+     */
+    public void recordEodSnapshot(int count) {
+        eodSnapshots.increment(count);
     }
 }

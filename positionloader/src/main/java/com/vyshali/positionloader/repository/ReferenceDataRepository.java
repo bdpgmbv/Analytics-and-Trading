@@ -1,12 +1,9 @@
 package com.vyshali.positionloader.repository;
 
 /*
- * 12/10/2025 - UPDATED: Added @Cacheable annotations for reference data
- *
- * PERFORMANCE IMPROVEMENT:
- * - Before: Every intraday update = 4-5 DB queries for ref data
- * - After:  First call hits DB, subsequent calls use cache
- * - Expected: 90%+ cache hit rate during intraday processing
+ * 12/10/2025 - FIXED: Added missing methods:
+ * - getAccountsForClient(Integer clientId)
+ * - areAllAccountsComplete(Integer clientId, LocalDate date)
  *
  * @author Vyshali Prabananth Lal
  */
@@ -20,15 +17,11 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDate;
 import java.util.List;
 
 /**
  * Repository for reference data: Clients, Funds, Accounts, Products.
- * <p>
- * CACHING STRATEGY:
- * - Read operations: @Cacheable (return cached value if exists)
- * - Write operations: @CacheEvict (invalidate cache after update)
- * - This ensures consistency while maximizing cache hits
  */
 @Slf4j
 @Repository
@@ -39,7 +32,6 @@ public class ReferenceDataRepository {
 
     /**
      * Ensure all reference data exists before inserting positions.
-     * This is the main entry point - it calls individual ensure methods.
      */
     public void ensureReferenceData(AccountSnapshotDTO snapshot) {
         ensureClient(snapshot.clientId(), snapshot.clientName());
@@ -52,21 +44,15 @@ public class ReferenceDataRepository {
 
     // ==================== CLIENT ====================
 
-    /**
-     * Check if client exists in cache first, then DB.
-     */
     @Cacheable(value = "clients", key = "#clientId", unless = "#result == false")
     public boolean clientExists(Integer clientId) {
-        Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM Clients WHERE client_id = ?", Integer.class, clientId);
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM Clients WHERE client_id = ?", Integer.class, clientId);
         return count != null && count > 0;
     }
 
-    /**
-     * Ensure client exists - uses cache to avoid repeated DB checks.
-     */
     @CacheEvict(value = "clients", key = "#clientId")
     public void ensureClient(Integer clientId, String clientName) {
-        // Check cache first via clientExists()
         if (clientExists(clientId)) {
             log.debug("Client {} found in cache/DB, skipping insert", clientId);
             return;
@@ -85,18 +71,13 @@ public class ReferenceDataRepository {
 
     // ==================== FUND ====================
 
-    /**
-     * Check if fund exists in cache first, then DB.
-     */
     @Cacheable(value = "funds", key = "#fundId", unless = "#result == false")
     public boolean fundExists(Integer fundId) {
-        Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM Funds WHERE fund_id = ?", Integer.class, fundId);
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM Funds WHERE fund_id = ?", Integer.class, fundId);
         return count != null && count > 0;
     }
 
-    /**
-     * Ensure fund exists.
-     */
     @CacheEvict(value = "funds", key = "#fundId")
     public void ensureFund(Integer fundId, Integer clientId, String fundName, String currency) {
         if (fundExists(fundId)) {
@@ -117,18 +98,13 @@ public class ReferenceDataRepository {
 
     // ==================== ACCOUNT ====================
 
-    /**
-     * Check if account exists.
-     */
     @Cacheable(value = "accounts", key = "#accountId", unless = "#result == false")
     public boolean accountExists(Integer accountId) {
-        Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM Accounts WHERE account_id = ?", Integer.class, accountId);
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM Accounts WHERE account_id = ?", Integer.class, accountId);
         return count != null && count > 0;
     }
 
-    /**
-     * Ensure account exists.
-     */
     @CacheEvict(value = "accounts", key = "#snapshot.accountId()")
     public void ensureAccount(AccountSnapshotDTO snapshot) {
         if (accountExists(snapshot.accountId())) {
@@ -137,40 +113,35 @@ public class ReferenceDataRepository {
         }
 
         jdbc.update("""
-                INSERT INTO Accounts (account_id, client_id, client_name, fund_id, fund_name,
-                    base_currency, account_number, account_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (account_id) DO UPDATE SET 
-                    account_number = EXCLUDED.account_number,
-                    created_at = CURRENT_TIMESTAMP
-                """, snapshot.accountId(), snapshot.clientId(), snapshot.clientName(), snapshot.fundId(), snapshot.fundName(), snapshot.baseCurrency(), snapshot.accountNumber(), snapshot.accountType());
+                        INSERT INTO Accounts (account_id, client_id, client_name, fund_id, fund_name,
+                            base_currency, account_number, account_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (account_id) DO UPDATE SET 
+                            account_number = EXCLUDED.account_number,
+                            created_at = CURRENT_TIMESTAMP
+                        """,
+                snapshot.accountId(), snapshot.clientId(), snapshot.clientName(),
+                snapshot.fundId(), snapshot.fundName(), snapshot.baseCurrency(),
+                snapshot.accountNumber(), snapshot.accountType());
 
         log.debug("Ensured account: {}", snapshot.accountId());
     }
 
     // ==================== PRODUCTS ====================
 
-    /**
-     * Check if product exists.
-     */
     @Cacheable(value = "products", key = "#productId", unless = "#result == false")
     public boolean productExists(Integer productId) {
-        Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM Products WHERE product_id = ?", Integer.class, productId);
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM Products WHERE product_id = ?", Integer.class, productId);
         return count != null && count > 0;
     }
 
-    /**
-     * Ensure products exist - batch check and insert.
-     */
     public void ensureProducts(List<PositionDTO> positions) {
         for (PositionDTO p : positions) {
             ensureProduct(p.productId(), p.ticker(), p.assetClass());
         }
     }
 
-    /**
-     * Ensure single product exists.
-     */
     @CacheEvict(value = "products", key = "#productId")
     public void ensureProduct(Integer productId, String ticker, String assetClass) {
         if (productExists(productId)) {
@@ -185,11 +156,8 @@ public class ReferenceDataRepository {
                 """, productId, ticker, assetClass, "Imported: " + ticker);
     }
 
-    // ==================== CLIENT ACCOUNTS (for EOD completion check) ====================
+    // ==================== CLIENT ACCOUNTS ====================
 
-    /**
-     * Count accounts for a client - cached for EOD completion checks.
-     */
     @Cacheable(value = "clientAccounts", key = "#clientId")
     public int countClientAccounts(Integer clientId) {
         Integer count = jdbc.queryForObject("""
@@ -199,23 +167,37 @@ public class ReferenceDataRepository {
         return count != null ? count : 0;
     }
 
-    // ==================== CACHE MANAGEMENT ====================
-
     /**
-     * Evict all reference data caches.
-     * Call this during EOD or when reference data is bulk updated.
+     * Get all account IDs for a client.
+     * Used by EOD batch processing.
      */
-    @CacheEvict(value = {"clients", "funds", "accounts", "products", "clientAccounts"}, allEntries = true)
-    public void evictAllCaches() {
-        log.info("All reference data caches evicted");
+    public List<Integer> getAccountsForClient(Integer clientId) {
+        return jdbc.queryForList("""
+                SELECT account_id FROM Accounts
+                WHERE fund_id IN (SELECT fund_id FROM Funds WHERE client_id = ?)
+                ORDER BY account_id
+                """, Integer.class, clientId);
     }
 
     /**
-     * Evict caches for a specific client hierarchy.
+     * Check if all accounts for a client have completed EOD for a given date.
      */
-    public void evictClientHierarchy(Integer clientId) {
-        // This would require programmatic cache access
-        // For now, we rely on key-based eviction in ensure methods
-        log.info("Evicted cache for client hierarchy: {}", clientId);
+    public boolean areAllAccountsComplete(Integer clientId, LocalDate businessDate) {
+        int totalAccounts = countClientAccounts(clientId);
+        if (totalAccounts == 0) return false;
+
+        Integer completedAccounts = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM Eod_Daily_Status
+                WHERE client_id = ? AND business_date = ? AND status = 'COMPLETED'
+                """, Integer.class, clientId, businessDate);
+
+        return completedAccounts != null && completedAccounts >= totalAccounts;
+    }
+
+    // ==================== CACHE MANAGEMENT ====================
+
+    @CacheEvict(value = {"clients", "funds", "accounts", "products", "clientAccounts"}, allEntries = true)
+    public void evictAllCaches() {
+        log.info("All reference data caches evicted");
     }
 }
