@@ -1,12 +1,16 @@
 package com.vyshali.positionloader.config;
 
 /*
- * 12/10/2025 - NEW: Caffeine cache configuration for reference data
- * @author Vyshali Prabananth Lal
+ * SIMPLIFIED: Removed 4 unused @Bean methods
  *
- * PERFORMANCE IMPACT:
- * - Before: 4000+ DB queries per 1000 intraday updates
- * - After:  ~100 DB queries per 1000 intraday updates (99% cache hit)
+ * DELETED:
+ * - clientsCacheBuilder() - was never injected anywhere
+ * - fundsCacheBuilder() - was never injected anywhere
+ * - activeBatchCacheBuilder() - was never injected anywhere
+ * - multiTtlCacheManager() - not used because cacheManager() is @Primary
+ *
+ * KEPT:
+ * - cacheManager() with per-cache TTL configuration
  */
 
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -16,8 +20,8 @@ import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.cache.caffeine.CaffeineCacheManager;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Primary;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -27,91 +31,46 @@ public class CacheConfig {
 
     /*
      * Cache TTL Strategy:
-     *
-     * | Cache Name      | TTL      | Reasoning                                    |
-     * |-----------------|----------|----------------------------------------------|
-     * | clients         | 1 hour   | Rarely changes, safe to cache long           |
-     * | funds           | 1 hour   | Rarely changes, safe to cache long           |
-     * | accounts        | 30 min   | May change during onboarding                 |
-     * | products        | 30 min   | New products added occasionally              |
-     * | activeBatch     | 5 min    | Changes during EOD batch swap                |
-     * | clientAccounts  | 30 min   | For client completion check                  |
-     *
-     * What NOT to cache:
-     * - Positions (change constantly)
-     * - Prices (real-time data)
-     * - Audit logs (write-only)
+     * | Cache Name      | TTL      | Reasoning                          |
+     * |-----------------|----------|------------------------------------|
+     * | clients, funds  | 1 hour   | Rarely changes                     |
+     * | accounts        | 30 min   | May change during onboarding       |
+     * | products        | 30 min   | New products added occasionally    |
+     * | activeBatch     | 5 min    | Changes during EOD batch swap      |
+     * | clientAccounts  | 30 min   | For client completion check        |
      */
 
     @Bean
-    @Primary
     public CacheManager cacheManager() {
-        CaffeineCacheManager cacheManager = new CaffeineCacheManager();
-
-        // Default cache spec for most caches
-        cacheManager.setCaffeine(Caffeine.newBuilder().maximumSize(10_000).expireAfterWrite(30, TimeUnit.MINUTES).recordStats());  // Enable stats for monitoring
-
-        // Register specific caches
-        cacheManager.setCacheNames(java.util.List.of("clients", "funds", "accounts", "products", "activeBatch", "clientAccounts"));
-
-        log.info("Caffeine CacheManager initialized with caches: {}", cacheManager.getCacheNames());
-        return cacheManager;
-    }
-
-    /**
-     * Separate cache for clients with longer TTL (1 hour).
-     */
-    @Bean
-    public Caffeine<Object, Object> clientsCacheBuilder() {
-        return Caffeine.newBuilder().maximumSize(1_000).expireAfterWrite(1, TimeUnit.HOURS).recordStats();
-    }
-
-    /**
-     * Separate cache for funds with longer TTL (1 hour).
-     */
-    @Bean
-    public Caffeine<Object, Object> fundsCacheBuilder() {
-        return Caffeine.newBuilder().maximumSize(5_000).expireAfterWrite(1, TimeUnit.HOURS).recordStats();
-    }
-
-    /**
-     * Short-lived cache for active batch IDs (5 minutes).
-     */
-    @Bean
-    public Caffeine<Object, Object> activeBatchCacheBuilder() {
-        return Caffeine.newBuilder().maximumSize(10_000).expireAfterWrite(5, TimeUnit.MINUTES).recordStats();
-    }
-
-    /**
-     * Custom cache manager with per-cache configurations.
-     * Use this if you need different TTLs per cache.
-     */
-    @Bean("multiTtlCacheManager")
-    public CacheManager multiTtlCacheManager() {
         CaffeineCacheManager manager = new CaffeineCacheManager() {
             @Override
             protected com.github.benmanes.caffeine.cache.Cache<Object, Object> createNativeCaffeineCache(String name) {
-                return getCaffeineBuilder(name).build();
+                return getCaffeineSpec(name).build();
             }
         };
 
-        manager.setCacheNames(java.util.List.of("clients", "funds", "accounts", "products", "activeBatch", "clientAccounts"));
+        manager.setCacheNames(List.of("clients", "funds", "accounts", "products", "activeBatch", "clientAccounts"));
 
+        log.info("CacheManager initialized with caches: {}", manager.getCacheNames());
         return manager;
     }
 
-    private Caffeine<Object, Object> getCaffeineBuilder(String cacheName) {
+    /**
+     * Returns cache configuration based on cache name.
+     * Different caches have different TTLs based on how often data changes.
+     */
+    private Caffeine<Object, Object> getCaffeineSpec(String cacheName) {
         return switch (cacheName) {
+            // Long TTL (1 hour) - data rarely changes
             case "clients", "funds" ->
                     Caffeine.newBuilder().maximumSize(1_000).expireAfterWrite(1, TimeUnit.HOURS).recordStats();
 
+            // Short TTL (5 minutes) - changes during EOD
             case "activeBatch" ->
                     Caffeine.newBuilder().maximumSize(10_000).expireAfterWrite(5, TimeUnit.MINUTES).recordStats();
 
-            case "accounts", "products", "clientAccounts" ->
-                    Caffeine.newBuilder().maximumSize(10_000).expireAfterWrite(30, TimeUnit.MINUTES).recordStats();
-
-            default -> Caffeine.newBuilder().maximumSize(5_000).expireAfterWrite(15, TimeUnit.MINUTES).recordStats();
+            // Medium TTL (30 minutes) - default for most caches
+            default -> Caffeine.newBuilder().maximumSize(10_000).expireAfterWrite(30, TimeUnit.MINUTES).recordStats();
         };
     }
 }

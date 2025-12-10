@@ -1,13 +1,37 @@
 package com.vyshali.positionloader.controller;
 
 /*
- * 12/10/2025 - 1:01 PM
- * @author Vyshali Prabananth Lal
+ * SIMPLIFIED: Merged EodController + EodService
+ *
+ * BEFORE:
+ *   EodController → EodService → JdbcTemplate/Repository
+ *   (EodService was just a pass-through for read-only queries)
+ *
+ * AFTER:
+ *   EodController → Repository (for queries)
+ *   EodController → SnapshotService (for mutations)
+ *
+ * PRINCIPLE:
+ *   - Don't create service layers that just delegate
+ *   - Services add value for: transactions, business logic, orchestration
+ *   - Simple queries can go directly to repository
+ *
+ * WHAT WAS REMOVED:
+ *   - EodService.java (DELETE this file)
+ *   - Pass-through methods like getEodStatus(), getEodHistory()
  */
 
-import com.vyshali.positionloader.dto.EodProgress;
-import com.vyshali.positionloader.service.EodService;
+import com.vyshali.positionloader.dto.EodStatusDTO;
+import com.vyshali.positionloader.dto.PositionDTO;
+import com.vyshali.positionloader.repository.EodRepository;
+import com.vyshali.positionloader.repository.PositionRepository;
+import com.vyshali.positionloader.service.SnapshotService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -16,52 +40,125 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
-/**
- * EOD progress monitoring and retry endpoints.
- */
+@Slf4j
 @RestController
-@RequestMapping("/api/eod")
+@RequestMapping("/api/v1/eod")
 @RequiredArgsConstructor
+@Tag(name = "EOD", description = "End-of-day position operations")
 public class EodController {
 
-    private final EodService eodService;
+    // Direct repository access for read-only queries
+    private final EodRepository eodRepository;
+    private final PositionRepository positionRepository;
 
-    @GetMapping("/progress")
-    public ResponseEntity<EodProgress.Status> getProgress(@RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+    // Service only for mutations (business logic, transactions)
+    private final SnapshotService snapshotService;
 
-        LocalDate businessDate = date != null ? date : LocalDate.now();
-        EodProgress.Status status = eodService.getProgress(businessDate);
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MUTATIONS - Use SnapshotService (has business logic)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Trigger EOD processing for an account.
+     * Uses SnapshotService because it involves:
+     * - Fetching from MSPM
+     * - Database transactions
+     * - Kafka publishing
+     * - Error handling
+     */
+    @PostMapping("/trigger/{accountId}")
+    @Operation(summary = "Trigger EOD processing for an account")
+    @ApiResponse(responseCode = "200", description = "EOD triggered successfully")
+    @ApiResponse(responseCode = "500", description = "EOD processing failed")
+    public ResponseEntity<?> triggerEod(@Parameter(description = "Account ID") @PathVariable Integer accountId, @Parameter(description = "Business date (defaults to today)") @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate businessDate) {
+
+        LocalDate date = businessDate != null ? businessDate : LocalDate.now();
+        log.info("EOD trigger requested: accountId={}, date={}", accountId, date);
+
+        try {
+            snapshotService.processEod(accountId);
+            return ResponseEntity.ok(Map.of("status", "SUCCESS", "accountId", accountId, "businessDate", date));
+        } catch (Exception e) {
+            log.error("EOD failed for account {}: {}", accountId, e.getMessage());
+            return ResponseEntity.internalServerError().body(Map.of("status", "FAILED", "accountId", accountId, "error", e.getMessage()));
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // QUERIES - Direct repository access (no service layer needed)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Get EOD status for an account.
+     * Direct repository call - no business logic needed.
+     */
+    @GetMapping("/status/{accountId}")
+    @Operation(summary = "Get EOD status for an account")
+    public ResponseEntity<EodStatusDTO> getEodStatus(@Parameter(description = "Account ID") @PathVariable Integer accountId, @Parameter(description = "Business date") @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate businessDate) {
+
+        LocalDate date = businessDate != null ? businessDate : LocalDate.now();
+
+        // BEFORE: controller → eodService.getEodStatus() → repository
+        // AFTER:  controller → repository (direct)
+        EodStatusDTO status = eodRepository.getEodStatus(accountId, date);
 
         if (status == null) {
-            return ResponseEntity.ok(new EodProgress.Status(businessDate, 0, 0, 0, 0, 0, null, "NOT_STARTED"));
+            return ResponseEntity.notFound().build();
         }
         return ResponseEntity.ok(status);
     }
 
-    @GetMapping("/failures")
-    public ResponseEntity<List<EodProgress.FailedAccount>> getFailures(@RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+    /**
+     * Get EOD history for an account.
+     * Direct repository call - simple query, no business logic.
+     */
+    @GetMapping("/history/{accountId}")
+    @Operation(summary = "Get EOD processing history")
+    public ResponseEntity<List<EodStatusDTO>> getEodHistory(@Parameter(description = "Account ID") @PathVariable Integer accountId, @Parameter(description = "Number of days of history") @RequestParam(defaultValue = "30") int days) {
 
-        LocalDate businessDate = date != null ? date : LocalDate.now();
-        return ResponseEntity.ok(eodService.getFailures(businessDate));
+        // Direct repository access
+        List<EodStatusDTO> history = eodRepository.getEodHistory(accountId, days);
+        return ResponseEntity.ok(history);
     }
 
-    @GetMapping("/pending")
-    public ResponseEntity<List<Integer>> getPending(@RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+    /**
+     * Get positions for an account on a business date.
+     * Direct repository call.
+     */
+    @GetMapping("/positions/{accountId}")
+    @Operation(summary = "Get positions for a business date")
+    public ResponseEntity<List<PositionDTO>> getPositions(@Parameter(description = "Account ID") @PathVariable Integer accountId, @Parameter(description = "Business date") @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate businessDate) {
 
-        LocalDate businessDate = date != null ? date : LocalDate.now();
-        return ResponseEntity.ok(eodService.getPending(businessDate));
+        LocalDate date = businessDate != null ? businessDate : LocalDate.now();
+
+        // Direct repository access
+        List<PositionDTO> positions = positionRepository.getPositionsByDate(accountId, date);
+        return ResponseEntity.ok(positions);
     }
 
-    @PostMapping("/retry")
-    public ResponseEntity<Map<String, Object>> retry(@RequestBody RetryRequest request) {
-        LocalDate businessDate = request.date != null ? request.date : LocalDate.now();
-        List<EodProgress.AccountResult> results = eodService.retry(request.accountIds, businessDate);
+    /**
+     * Get batch information for an account.
+     */
+    @GetMapping("/batch/{accountId}")
+    @Operation(summary = "Get current batch info")
+    public ResponseEntity<?> getBatchInfo(@Parameter(description = "Account ID") @PathVariable Integer accountId) {
 
-        int success = (int) results.stream().filter(EodProgress.AccountResult::success).count();
+        // Direct repository access
+        int currentBatch = positionRepository.getNextBatchId(accountId) - 1;
 
-        return ResponseEntity.ok(Map.of("date", businessDate, "attempted", request.accountIds.size(), "success", success, "failed", request.accountIds.size() - success));
+        return ResponseEntity.ok(Map.of("accountId", accountId, "currentBatchId", Math.max(0, currentBatch), "nextBatchId", currentBatch + 1));
     }
 
-    public record RetryRequest(LocalDate date, List<Integer> accountIds) {
+    /**
+     * Check if EOD has run for today.
+     */
+    @GetMapping("/ran-today/{accountId}")
+    @Operation(summary = "Check if EOD ran today")
+    public ResponseEntity<?> hasEodRanToday(@Parameter(description = "Account ID") @PathVariable Integer accountId) {
+
+        EodStatusDTO status = eodRepository.getEodStatus(accountId, LocalDate.now());
+        boolean ranToday = status != null && "COMPLETED".equals(status.status());
+
+        return ResponseEntity.ok(Map.of("accountId", accountId, "date", LocalDate.now(), "eodCompleted", ranToday));
     }
 }
