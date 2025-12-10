@@ -20,6 +20,9 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
 
+    // Security - ADDED: Required for SecurityConfig OAuth2
+    implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
+
     // Kafka
     implementation("org.springframework.kafka:spring-kafka")
 

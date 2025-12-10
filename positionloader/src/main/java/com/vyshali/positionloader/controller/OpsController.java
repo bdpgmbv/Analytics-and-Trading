@@ -1,8 +1,8 @@
 package com.vyshali.positionloader.controller;
 
 /*
- * Updated: 12/09/2025
- * Fixes: Renamed method calls, Swagger imports
+ * 12/10/2025 - FIXED: Removed Swagger dependency, all methods now compile
+ * @author Vyshali Prabananth Lal
  */
 
 import com.vyshali.positionloader.dto.AccountSnapshotDTO;
@@ -10,7 +10,6 @@ import com.vyshali.positionloader.repository.AuditRepository;
 import com.vyshali.positionloader.repository.PositionRepository;
 import com.vyshali.positionloader.service.EventService;
 import com.vyshali.positionloader.service.SnapshotService;
-import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -33,7 +32,6 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/ops")
 @RequiredArgsConstructor
-@Tag(name = "Operations", description = "Manual triggers for Support Team")
 public class OpsController {
 
     private final SnapshotService snapshotService;
@@ -148,7 +146,14 @@ public class OpsController {
         return ResponseEntity.ok(qty);
     }
 
+    // ==================== HEALTH CHECK ====================
+
+    @GetMapping("/health")
+    public ResponseEntity<Map<String, String>> health() {
+        return ResponseEntity.ok(Map.of("status", "UP", "service", "positionloader"));
+    }
+
     private String getUser(Authentication auth) {
-        return auth != null ? auth.getName() : "UNKNOWN";
+        return auth != null ? auth.getName() : "ANONYMOUS";
     }
 }

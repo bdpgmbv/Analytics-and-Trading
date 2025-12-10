@@ -1,7 +1,7 @@
 package com.vyshali.positionloader.repository;
 
 /*
- * 12/09/2025 - Refactored for Bitemporal Architecture
+ * 12/10/2025 - FIXED: Added missing getQuantityAsOf for bitemporal queries
  * @author Vyshali Prabananth Lal
  */
 
@@ -12,6 +12,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.util.List;
 
 /**
@@ -114,5 +115,54 @@ public class PositionRepository {
                 WHERE p.account_id = ? AND ab.status = 'ACTIVE'
                 """, Integer.class, accountId);
         return count != null ? count : 0;
+    }
+
+    // ==================== BITEMPORAL QUERIES ====================
+
+    /**
+     * Get position quantity as of a specific business date and system time.
+     * This is the core bitemporal query for audit/compliance.
+     *
+     * @param accountId    The account ID
+     * @param productId    The product ID
+     * @param businessDate The business date we're asking about
+     * @param systemTime   The system time (when did we know this?)
+     * @return The quantity as of that point in time, or ZERO if not found
+     */
+    public BigDecimal getQuantityAsOf(Integer accountId, Integer productId, Timestamp businessDate, Timestamp systemTime) {
+        try {
+            // Bitemporal query: What did we know (systemTime) about position on (businessDate)?
+            // Uses system_from/system_to for "when did we record this"
+            // Uses updated_at as proxy for business validity
+            return jdbc.queryForObject("""
+                    SELECT quantity FROM Positions
+                    WHERE account_id = ?
+                      AND product_id = ?
+                      AND system_from <= ?
+                      AND system_to > ?
+                      AND updated_at <= ?
+                    ORDER BY system_from DESC
+                    LIMIT 1
+                    """, BigDecimal.class, accountId, productId, systemTime, systemTime, businessDate);
+        } catch (Exception e) {
+            log.debug("No position found for account={}, product={}, asOf={}/{}", accountId, productId, businessDate, systemTime);
+            return BigDecimal.ZERO;
+        }
+    }
+
+    /**
+     * Get all positions for an account as of a specific time.
+     */
+    public List<PositionDTO> getPositionsAsOf(Integer accountId, Timestamp asOfTime) {
+        return jdbc.query("""
+                SELECT p.product_id, pr.ticker, pr.asset_class, pr.issue_currency,
+                       p.quantity, p.avg_cost_price, 'HISTORICAL' as txn_type, NULL as external_ref_id
+                FROM Positions p
+                JOIN Products pr ON p.product_id = pr.product_id
+                WHERE p.account_id = ?
+                  AND p.system_from <= ?
+                  AND p.system_to > ?
+                ORDER BY pr.ticker
+                """, (rs, rowNum) -> new PositionDTO(rs.getInt("product_id"), rs.getString("ticker"), rs.getString("asset_class"), rs.getString("issue_currency"), rs.getBigDecimal("quantity"), rs.getBigDecimal("avg_cost_price"), rs.getString("txn_type"), rs.getString("external_ref_id")), accountId, asOfTime, asOfTime);
     }
 }
