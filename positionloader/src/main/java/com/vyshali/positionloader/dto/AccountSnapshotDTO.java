@@ -10,13 +10,28 @@ import jakarta.validation.constraints.NotNull;
 
 import java.util.List;
 
-public record AccountSnapshotDTO(@NotNull Integer clientId, String clientName, @NotNull Integer fundId, String fundName,
-                                 String baseCurrency, @NotNull Integer accountId, String accountNumber,
-                                 String accountType, @Valid List<PositionDetailDTO> positions, String status
-                                 // Added for fallback handling: "OK", "Unavailable", "ERROR"
+/**
+ * Account snapshot from upstream MSPM system.
+ */
+public record AccountSnapshotDTO(@NotNull Integer accountId, @NotNull Integer clientId, String clientName,
+                                 @NotNull Integer fundId, String fundName, String baseCurrency, String accountNumber,
+                                 String accountType, @Valid List<PositionDTO> positions, String status
+                                 // OK, STALE_CACHE, UNAVAILABLE, ERROR
 ) {
-    // Convenience constructor for backward compatibility (without status)
-    public AccountSnapshotDTO(Integer clientId, String clientName, Integer fundId, String fundName, String baseCurrency, Integer accountId, String accountNumber, String accountType, List<PositionDetailDTO> positions) {
-        this(clientId, clientName, fundId, fundName, baseCurrency, accountId, accountNumber, accountType, positions, "OK");
+    // Convenience constructor without status (defaults to OK)
+    public AccountSnapshotDTO(Integer accountId, Integer clientId, String clientName, Integer fundId, String fundName, String baseCurrency, String accountNumber, String accountType, List<PositionDTO> positions) {
+        this(accountId, clientId, clientName, fundId, fundName, baseCurrency, accountNumber, accountType, positions, "OK");
+    }
+
+    public boolean isAvailable() {
+        return !"UNAVAILABLE".equals(status) && !"ERROR".equals(status);
+    }
+
+    public boolean isStale() {
+        return "STALE_CACHE".equals(status);
+    }
+
+    public int positionCount() {
+        return positions != null ? positions.size() : 0;
     }
 }

@@ -10,25 +10,26 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.web.SecurityFilterChain;
 
+/**
+ * Security configuration with OAuth2 for prod, permissive for local dev.
+ */
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfig {
 
     @Bean
     @Profile("prod")
-    public SecurityFilterChain prodFilterChain(HttpSecurity http) throws Exception {
-        http.authorizeHttpRequests(auth -> auth.requestMatchers("/actuator/**").permitAll().anyRequest().authenticated()).oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> {
-        }));
-        return http.build();
+    public SecurityFilterChain prodSecurityChain(HttpSecurity http) throws Exception {
+        return http.authorizeHttpRequests(auth -> auth.requestMatchers("/actuator/**").permitAll().anyRequest().authenticated()).oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> {
+        })).build();
     }
 
     @Bean
     @Profile("!prod")
-    public SecurityFilterChain localFilterChain(HttpSecurity http) throws Exception {
-        http.authorizeHttpRequests(auth -> auth.anyRequest().permitAll()).csrf(AbstractHttpConfigurer::disable); // Fixed: Newer Syntax
-        return http.build();
+    public SecurityFilterChain devSecurityChain(HttpSecurity http) throws Exception {
+        return http.authorizeHttpRequests(auth -> auth.anyRequest().permitAll()).csrf(AbstractHttpConfigurer::disable).build();
     }
 }

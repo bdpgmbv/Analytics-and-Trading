@@ -6,139 +6,149 @@ package com.vyshali.positionloader.controller;
  */
 
 import com.vyshali.positionloader.dto.AccountSnapshotDTO;
-import com.vyshali.positionloader.service.AuditService;
-import com.vyshali.positionloader.service.DlqReplayService;
+import com.vyshali.positionloader.repository.AuditRepository;
+import com.vyshali.positionloader.repository.PositionRepository;
+import com.vyshali.positionloader.service.EventService;
 import com.vyshali.positionloader.service.SnapshotService;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * Operations controller with maker-checker pattern.
+ * Includes audit queries and DLQ replay.
+ */
 @Slf4j
 @RestController
 @RequestMapping("/api/ops")
 @RequiredArgsConstructor
-@Tag(name = "Operations", description = "Manual triggers for Support Team (Audited)")
+@Tag(name = "Operations", description = "Manual triggers for Support Team")
 public class OpsController {
 
     private final SnapshotService snapshotService;
-    private final AuditService auditService;
-    private final DlqReplayService dlqReplayService;
-    private final JdbcTemplate jdbcTemplate;
+    private final EventService eventService;
+    private final AuditRepository audit;
+    private final PositionRepository positions;
 
-    // ==========================================================
-    // 1. THE MAKER (User A initiates the Request)
-    // ==========================================================
+    // ==================== MAKER-CHECKER EOD ====================
+
     @PostMapping("/eod/{accountId}")
     @PreAuthorize("hasPermission(#accountId, 'TRIGGER_EOD')")
-    public ResponseEntity<String> requestEod(@PathVariable Integer accountId, Authentication auth) {
-        String makerName = getName(auth);
+    public ResponseEntity<Map<String, String>> requestEod(@PathVariable Integer accountId, Authentication auth) {
+
+        String maker = getUser(auth);
         String requestId = "REQ-" + UUID.randomUUID().toString().substring(0, 8);
 
-        log.info("MAKER: User {} is requesting EOD for Account {}", makerName, accountId);
+        log.info("MAKER: {} requesting EOD for account {}", maker, accountId);
 
-        String sql = """
-                    INSERT INTO Ops_Requests (request_id, action_type, payload, requested_by, status)
-                    VALUES (?, 'TRIGGER_EOD', ?, ?, 'PENDING')
-                """;
+        audit.createRequest(requestId, "TRIGGER_EOD", accountId.toString(), maker);
+        audit.log("REQUEST_EOD", accountId.toString(), maker, "PENDING");
 
-        jdbcTemplate.update(sql, requestId, accountId.toString(), makerName);
-        auditService.logAction("REQUEST_EOD", accountId.toString(), makerName, "PENDING");
-
-        return ResponseEntity.ok("Request submitted! ID: " + requestId + ". Ask a colleague to approve it.");
+        return ResponseEntity.ok(Map.of("requestId", requestId, "message", "Request submitted. Ask a colleague to approve."));
     }
 
-    // ==========================================================
-    // 2. THE CHECKER (User B approves the Request)
-    // ==========================================================
     @PostMapping("/approve/{requestId}")
     @PreAuthorize("hasAuthority('SCOPE_fxan.ops.write')")
-    public ResponseEntity<String> approveRequest(@PathVariable String requestId, Authentication auth) {
-        String checkerName = getName(auth);
+    public ResponseEntity<Map<String, String>> approveRequest(@PathVariable String requestId, Authentication auth) {
 
-        Map<String, Object> req;
-        try {
-            req = jdbcTemplate.queryForMap("SELECT * FROM Ops_Requests WHERE request_id = ?", requestId);
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Request ID not found: " + requestId);
+        String checker = getUser(auth);
+
+        Map<String, Object> req = audit.getRequest(requestId);
+        if (req == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Request not found"));
         }
 
-        String makerName = (String) req.get("requested_by");
+        String maker = (String) req.get("requested_by");
         String status = (String) req.get("status");
         String payload = (String) req.get("payload");
-        String actionType = (String) req.get("action_type");
+        String action = (String) req.get("action_type");
 
         if (!"PENDING".equals(status)) {
-            return ResponseEntity.badRequest().body("Request is already " + status);
+            return ResponseEntity.badRequest().body(Map.of("error", "Request already " + status));
         }
 
-        if (makerName.equals(checkerName)) {
-            log.warn("SECURITY ALERT: User {} tried to approve their own request {}", checkerName, requestId);
-            return ResponseEntity.status(403).body("Violation: Maker cannot be Checker. Ask someone else.");
+        if (maker.equals(checker)) {
+            log.warn("SECURITY: {} tried to approve their own request", checker);
+            return ResponseEntity.status(403).body(Map.of("error", "Maker cannot be checker"));
         }
 
         try {
-            if ("TRIGGER_EOD".equals(actionType)) {
+            if ("TRIGGER_EOD".equals(action)) {
                 Integer accountId = Integer.parseInt(payload);
-                log.info("CHECKER: User {} approved EOD for Account {}. Executing now...", checkerName, accountId);
+                log.info("CHECKER: {} approved EOD for account {}", checker, accountId);
 
-                // *** FIX: Changed from processEodFromMspm to initiateEodLoad ***
-                snapshotService.initiateEodLoad(accountId);
-
-                auditService.logAction("APPROVE_EOD", accountId.toString(), checkerName, "SUCCESS");
+                snapshotService.processEod(accountId);
+                audit.log("APPROVE_EOD", accountId.toString(), checker, "SUCCESS");
             }
 
-            jdbcTemplate.update("UPDATE Ops_Requests SET status = 'APPROVED', approved_by = ?, updated_at = CURRENT_TIMESTAMP WHERE request_id = ?", checkerName, requestId);
-
-            return ResponseEntity.ok("Approved and Executed by " + checkerName);
+            audit.approveRequest(requestId, checker);
+            return ResponseEntity.ok(Map.of("message", "Approved and executed by " + checker));
 
         } catch (Exception e) {
             log.error("Execution failed after approval", e);
-            auditService.logAction("APPROVE_EOD", payload, checkerName, "FAILED");
-            return ResponseEntity.internalServerError().body("Execution failed: " + e.getMessage());
+            audit.log("APPROVE_EOD", payload, checker, "FAILED");
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
         }
     }
 
+    // ==================== MANUAL TRIGGERS ====================
+
     @PostMapping("/intraday")
     @PreAuthorize("hasAuthority('SCOPE_fxan.ops.write')")
-    public ResponseEntity<String> triggerIntraday(@RequestBody AccountSnapshotDTO dto, Authentication auth) {
-        String user = getName(auth);
-        auditService.logAction("TRIGGER_INTRA", dto.accountId().toString(), user, "STARTED");
-        try {
-            // Ensure SnapshotService has this method. If missing, paste the method below into SnapshotService.
-            snapshotService.processIntradayPayload(dto);
+    public ResponseEntity<Map<String, String>> triggerIntraday(@RequestBody AccountSnapshotDTO dto, Authentication auth) {
 
-            auditService.logAction("TRIGGER_INTRA", dto.accountId().toString(), user, "SUCCESS");
-            return ResponseEntity.ok("Intraday Processed");
+        String user = getUser(auth);
+        audit.log("TRIGGER_INTRADAY", dto.accountId().toString(), user, "STARTED");
+
+        try {
+            snapshotService.processIntraday(dto);
+            audit.log("TRIGGER_INTRADAY", dto.accountId().toString(), user, "SUCCESS");
+            return ResponseEntity.ok(Map.of("message", "Intraday processed"));
         } catch (Exception e) {
-            auditService.logAction("TRIGGER_INTRA", dto.accountId().toString(), user, "FAILED");
+            audit.log("TRIGGER_INTRADAY", dto.accountId().toString(), user, "FAILED");
             throw e;
         }
     }
 
     @PostMapping("/dlq/replay")
     @PreAuthorize("hasAuthority('SCOPE_fxan.ops.admin')")
-    public ResponseEntity<String> replayDlq(@RequestParam String topicName, Authentication auth) {
-        String user = getName(auth);
-        auditService.logAction("DLQ_REPLAY", topicName, user, "STARTED");
+    public ResponseEntity<Map<String, Object>> replayDlq(@RequestParam String topic, Authentication auth) {
+
+        String user = getUser(auth);
+        audit.log("DLQ_REPLAY", topic, user, "STARTED");
+
         try {
-            int count = dlqReplayService.replayDlqMessages(topicName);
-            auditService.logAction("DLQ_REPLAY", topicName, user, "SUCCESS");
-            return ResponseEntity.ok("Replayed " + count + " messages.");
+            int count = eventService.replayDlq(topic);
+            audit.log("DLQ_REPLAY", topic, user, "SUCCESS");
+            return ResponseEntity.ok(Map.of("replayed", count));
         } catch (Exception e) {
-            auditService.logAction("DLQ_REPLAY", topicName, user, "FAILED");
-            return ResponseEntity.internalServerError().body("Failed: " + e.getMessage());
+            audit.log("DLQ_REPLAY", topic, user, "FAILED");
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
         }
     }
 
-    private String getName(Authentication auth) {
-        return (auth != null) ? auth.getName() : "UNKNOWN";
+    // ==================== AUDIT QUERIES ====================
+
+    @GetMapping("/audit/position/as-of")
+    public ResponseEntity<BigDecimal> getPositionAsOf(@RequestParam Integer accountId, @RequestParam Integer productId, @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime businessDate, @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime systemTime) {
+
+        BigDecimal qty = positions.getQuantityAsOf(accountId, productId, Timestamp.valueOf(businessDate), Timestamp.valueOf(systemTime));
+
+        return ResponseEntity.ok(qty);
+    }
+
+    private String getUser(Authentication auth) {
+        return auth != null ? auth.getName() : "UNKNOWN";
     }
 }

@@ -13,23 +13,25 @@ import jakarta.validation.constraints.Positive;
 import java.math.BigDecimal;
 import java.util.List;
 
-public record TradeEventDTO(@NotBlank(message = "Transaction ID is required") String transactionId,
+/**
+ * Trade event from FX Analyzer for intraday position updates.
+ */
+public record TradeEventDTO(@NotBlank String transactionId, @NotBlank String eventType,  // BUY, SELL, CANCEL, AMEND
+                            @NotNull Integer accountId, Integer clientId, String originalRefId,  // For AMEND/CANCEL
+                            @Valid List<TradeLeg> legs) {
+    /**
+     * Single leg of a trade.
+     */
+    public record TradeLeg(@NotNull Integer productId, @NotBlank String ticker, @NotNull @Positive BigDecimal quantity,
+                           @NotBlank String side,  // BUY, SELL
+                           BigDecimal price) {
+    }
 
-                            String originalRefId, // Optional
+    public boolean isCancel() {
+        return "CANCEL".equalsIgnoreCase(eventType);
+    }
 
-                            @NotBlank(message = "Event Type is required") String eventType,
-
-                            @NotNull(message = "Account ID is required") Integer accountId,
-
-                            Integer clientId,
-
-                            @Valid List<PositionDetail> positions) {
-    public record PositionDetail(@NotNull Integer productId, @NotBlank String ticker,
-
-                                 @NotNull @Positive(message = "Quantity must be positive") BigDecimal quantity,
-
-                                 @NotBlank String txnType,
-
-                                 @Positive BigDecimal price) {
+    public boolean isAmend() {
+        return "AMEND".equalsIgnoreCase(eventType);
     }
 }

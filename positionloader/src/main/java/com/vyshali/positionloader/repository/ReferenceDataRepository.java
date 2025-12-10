@@ -6,72 +6,72 @@ package com.vyshali.positionloader.repository;
  * @author Vyshali Prabananth Lal
  */
 
-import com.vyshali.positionloader.dto.PositionDetailDTO;
+import com.vyshali.positionloader.dto.AccountSnapshotDTO;
+import com.vyshali.positionloader.dto.PositionDTO;
 import lombok.RequiredArgsConstructor;
-import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
 import java.util.List;
 
+/**
+ * Repository for reference data: Clients, Funds, Accounts, Products.
+ */
 @Repository
 @RequiredArgsConstructor
 public class ReferenceDataRepository {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final JdbcTemplate jdbc;
 
     /**
-     * Ensure Client exists (upsert)
+     * Ensure all reference data exists before inserting positions.
      */
-    public void ensureClientExists(Integer clientId, String clientName) {
-        jdbcTemplate.update(ReferenceDataSql.UPSERT_CLIENT, clientId, clientName);
+    public void ensureReferenceData(AccountSnapshotDTO snapshot) {
+        ensureClient(snapshot.clientId(), snapshot.clientName());
+        ensureFund(snapshot.fundId(), snapshot.clientId(), snapshot.fundName(), snapshot.baseCurrency());
+        ensureAccount(snapshot);
+
+        if (snapshot.positions() != null) {
+            ensureProducts(snapshot.positions());
+        }
     }
 
-    /**
-     * Ensure Fund exists (upsert)
-     */
-    public void ensureFundExists(Integer fundId, Integer clientId, String fundName, String currency) {
-        jdbcTemplate.update(ReferenceDataSql.UPSERT_FUND, fundId, clientId, fundName, currency);
+    private void ensureClient(Integer clientId, String clientName) {
+        jdbc.update("""
+                INSERT INTO Clients (client_id, client_name, status, updated_at) 
+                VALUES (?, ?, 'ACTIVE', CURRENT_TIMESTAMP) 
+                ON CONFLICT (client_id) DO UPDATE SET 
+                    client_name = EXCLUDED.client_name, updated_at = CURRENT_TIMESTAMP
+                """, clientId, clientName);
     }
 
-    /**
-     * Upsert Account - Using the JOIN-based query
-     * <p>
-     * Note: This requires Fund to exist first (which it should after ensureFundExists)
-     */
-    public void upsertAccount(Integer accountId, Integer fundId, String accountNum, String type) {
-        // Parameters: accountId, fundId (for insert), accountNum, type, fundId (for SELECT)
-        jdbcTemplate.update(ReferenceDataSql.UPSERT_ACCOUNT, accountId, fundId, accountNum, type, fundId);
+    private void ensureFund(Integer fundId, Integer clientId, String fundName, String currency) {
+        jdbc.update("""
+                INSERT INTO Funds (fund_id, client_id, fund_name, base_currency, status, updated_at) 
+                VALUES (?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP) 
+                ON CONFLICT (fund_id) DO UPDATE SET 
+                    fund_name = EXCLUDED.fund_name, base_currency = EXCLUDED.base_currency, updated_at = CURRENT_TIMESTAMP
+                """, fundId, clientId, fundName, currency);
     }
 
-    /**
-     * Alternative: Upsert Account with all values directly from DTO
-     */
-    public void upsertAccountDirect(Integer accountId, Integer clientId, String clientName, Integer fundId, String fundName, String baseCurrency, String accountNum, String type) {
-        jdbcTemplate.update(ReferenceDataSql.UPSERT_ACCOUNT_DIRECT, accountId, clientId, clientName, fundId, fundName, baseCurrency, accountNum, type);
+    private void ensureAccount(AccountSnapshotDTO s) {
+        jdbc.update("""
+                INSERT INTO Accounts (account_id, client_id, client_name, fund_id, fund_name, 
+                                      base_currency, account_number, account_type) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (account_id) DO UPDATE SET 
+                    account_number = EXCLUDED.account_number, account_type = EXCLUDED.account_type
+                """, s.accountId(), s.clientId(), s.clientName(), s.fundId(), s.fundName(), s.baseCurrency(), s.accountNumber(), s.accountType());
     }
 
-    /**
-     * Batch upsert products from position list
-     */
-    public void batchUpsertProducts(List<PositionDetailDTO> positions) {
-        jdbcTemplate.batchUpdate(ReferenceDataSql.UPSERT_PRODUCT, new BatchPreparedStatementSetter() {
-            @Override
-            public void setValues(PreparedStatement ps, int i) throws SQLException {
-                PositionDetailDTO p = positions.get(i);
-                ps.setInt(1, p.productId());
-                ps.setString(2, p.ticker());
-                ps.setString(3, p.assetClass() != null ? p.assetClass() : "EQUITY");
-                ps.setString(4, "Imported from " + (p.ticker() != null ? p.ticker() : "Unknown"));
-                ps.setString(5, p.ticker()); // identifier_value = ticker
-            }
-
-            @Override
-            public int getBatchSize() {
-                return positions.size();
-            }
-        });
+    private void ensureProducts(List<PositionDTO> positions) {
+        for (PositionDTO p : positions) {
+            jdbc.update("""
+                    INSERT INTO Products (product_id, ticker, asset_class, description, identifier_type, identifier_value) 
+                    VALUES (?, ?, ?, ?, 'TICKER', ?) 
+                    ON CONFLICT (product_id) DO UPDATE SET 
+                        ticker = EXCLUDED.ticker, identifier_value = EXCLUDED.identifier_value
+                    """, p.productId(), p.ticker(), p.assetClass() != null ? p.assetClass() : "EQUITY", "Imported: " + p.ticker(), p.ticker());
+        }
     }
 }
