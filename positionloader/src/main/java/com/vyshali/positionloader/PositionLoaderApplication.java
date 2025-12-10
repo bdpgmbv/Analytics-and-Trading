@@ -7,15 +7,9 @@ package com.vyshali.positionloader;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.annotation.ComponentScan;
-import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
-@EnableCaching
-@EnableScheduling
-@EnableConfigurationProperties
 @ComponentScan(basePackages = {"com.vyshali.positionloader", "com.vyshali.common"})
 public class PositionLoaderApplication {
 

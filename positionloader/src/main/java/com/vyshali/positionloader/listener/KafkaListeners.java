@@ -20,8 +20,8 @@ import java.util.List;
  * Kafka listeners for Position Loader.
  * <p>
  * Two flows:
- * 1. EOD Trigger from MSPM (after market close) - receives account ID
- * 2. Intraday Batches from MSPA (throughout the day) - 1-100 transactions per batch
+ * 1. EOD Trigger: Account ID from MSPM after market close
+ * 2. Intraday Batch: Position updates from MSPA throughout the day
  */
 @Slf4j
 @Component
@@ -31,11 +31,10 @@ public class KafkaListeners {
     private final SnapshotService snapshotService;
 
     /**
-     * EOD Trigger from MSPM.
-     * Receives: Account ID (string)
-     * Action: Fetch full snapshot from MSPM REST API and save to DB
+     * EOD trigger from MSPM.
+     * Message: Account ID as string
      */
-    @KafkaListener(topics = KafkaConfig.TOPIC_EOD_TRIGGER, groupId = KafkaConfig.GROUP_EOD, containerFactory = "eodFactory")
+    @KafkaListener(topics = KafkaConfig.TOPIC_EOD_TRIGGER, groupId = "positionloader-eod-group", containerFactory = "kafkaListenerContainerFactory")
     public void onEodTrigger(ConsumerRecord<String, String> record, Acknowledgment ack) {
         String accountIdStr = record.value();
         log.info("EOD trigger received: account={}", accountIdStr);
@@ -47,7 +46,7 @@ public class KafkaListeners {
             log.info("EOD complete: account={}", accountId);
 
         } catch (NumberFormatException e) {
-            log.error("Invalid account ID in EOD trigger: {}", accountIdStr);
+            log.error("Invalid account ID: {}", accountIdStr);
             ack.acknowledge(); // Don't retry bad data
 
         } catch (Exception e) {
@@ -57,13 +56,12 @@ public class KafkaListeners {
     }
 
     /**
-     * Intraday Batches from MSPA.
-     * Receives: Batch of 1-100 JSON records (AccountSnapshotDTO format)
-     * Action: Update positions incrementally
+     * Intraday batch from MSPA.
+     * Message: JSON AccountSnapshotDTO
      */
-    @KafkaListener(topics = KafkaConfig.TOPIC_INTRADAY, groupId = KafkaConfig.GROUP_INTRADAY, containerFactory = "batchFactory")
+    @KafkaListener(topics = KafkaConfig.TOPIC_INTRADAY, groupId = "positionloader-intraday-group", containerFactory = "batchFactory")
     public void onIntradayBatch(List<ConsumerRecord<String, String>> records, Acknowledgment ack) {
-        log.info("Intraday batch received: {} records", records.size());
+        log.info("Intraday batch: {} records", records.size());
 
         int success = 0;
         int failed = 0;
@@ -74,11 +72,11 @@ public class KafkaListeners {
                 success++;
             } catch (Exception e) {
                 failed++;
-                log.error("Intraday record failed: offset={}, error={}", record.offset(), e.getMessage());
+                log.error("Intraday failed: offset={}, error={}", record.offset(), e.getMessage());
             }
         }
 
-        log.info("Intraday batch complete: success={}, failed={}", success, failed);
+        log.info("Intraday batch done: success={}, failed={}", success, failed);
         ack.acknowledge();
     }
 }

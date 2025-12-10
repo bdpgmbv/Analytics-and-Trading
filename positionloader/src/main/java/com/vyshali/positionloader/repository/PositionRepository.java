@@ -12,21 +12,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
-import java.sql.Timestamp;
-import java.time.Instant;
 import java.util.List;
 
 /**
  * Repository for Position CRUD operations.
- * <p>
- * Uses bitemporal design:
- * - system_from: When the record was created
- * - system_to: When the record was superseded (9999-12-31 = current)
- * <p>
- * Batch design for EOD:
- * - Create new batch in STAGING status
- * - Insert positions into new batch
- * - Activate batch (atomic swap: old ACTIVE → ARCHIVED, new STAGING → ACTIVE)
+ * Uses batch-based atomic swap for EOD loads.
  */
 @Slf4j
 @Repository
@@ -34,10 +24,6 @@ import java.util.List;
 public class PositionRepository {
 
     private final JdbcTemplate jdbc;
-
-    private static final Timestamp END_OF_TIME = Timestamp.valueOf("9999-12-31 23:59:59");
-
-    // ==================== BATCH MANAGEMENT (EOD) ====================
 
     /**
      * Create a new staging batch for an account.
@@ -52,148 +38,37 @@ public class PositionRepository {
                 VALUES (?, ?, 'STAGING', CURRENT_TIMESTAMP)
                 """, accountId, nextId);
 
-        log.debug("Created batch {} for account {}", nextId, accountId);
         return nextId;
     }
 
     /**
-     * Activate a batch (atomic swap).
+     * Insert positions into a batch.
+     */
+    public void insertPositions(Integer accountId, List<PositionDTO> positions, String source, int batchId) {
+        for (PositionDTO p : positions) {
+            BigDecimal cost = p.quantity().multiply(p.price());
+
+            jdbc.update("""
+                    INSERT INTO Positions (account_id, product_id, quantity, avg_cost_price, cost_local,
+                        source_system, batch_id, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """, accountId, p.productId(), p.quantity(), p.price(), cost, source, batchId);
+        }
+    }
+
+    /**
+     * Activate a batch (atomic swap: old ACTIVE → ARCHIVED, new STAGING → ACTIVE).
      */
     public void activateBatch(Integer accountId, int batchId) {
-        // Archive old active batch
         jdbc.update("""
-                UPDATE Account_Batches 
-                SET status = 'ARCHIVED' 
+                UPDATE Account_Batches SET status = 'ARCHIVED'
                 WHERE account_id = ? AND status = 'ACTIVE'
                 """, accountId);
 
-        // Activate new batch
         jdbc.update("""
-                UPDATE Account_Batches 
-                SET status = 'ACTIVE' 
+                UPDATE Account_Batches SET status = 'ACTIVE'
                 WHERE account_id = ? AND batch_id = ?
                 """, accountId, batchId);
-
-        log.debug("Activated batch {} for account {}", batchId, accountId);
-    }
-
-    /**
-     * Cleanup old archived batches.
-     */
-    public void cleanupBatches(Integer accountId) {
-        int deleted = jdbc.update("""
-                DELETE FROM Account_Batches 
-                WHERE account_id = ? AND status = 'ARCHIVED'
-                """, accountId);
-
-        if (deleted > 0) {
-            log.debug("Cleaned up {} archived batches for account {}", deleted, accountId);
-        }
-    }
-
-    // ==================== EOD POSITION INSERT ====================
-
-    /**
-     * Insert positions for EOD load.
-     */
-    public void insertPositions(Integer accountId, List<PositionDTO> positions, String source, int batchId) {
-        Timestamp now = Timestamp.from(Instant.now());
-
-        for (PositionDTO p : positions) {
-            BigDecimal price = p.price() != null ? p.price() : BigDecimal.ZERO;
-            BigDecimal cost = p.quantity().multiply(price);
-
-            jdbc.update("""
-                    INSERT INTO Positions (
-                        account_id, product_id, quantity, avg_cost_price, cost_local,
-                        source_system, position_type, batch_id, 
-                        system_from, system_to, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, 'PHYSICAL', ?, ?, ?, CURRENT_TIMESTAMP)
-                    """, accountId, p.productId(), p.quantity(), price, cost, source, batchId, now, END_OF_TIME);
-        }
-
-        log.debug("Inserted {} positions for account {} in batch {}", positions.size(), accountId, batchId);
-    }
-
-    // ==================== INTRADAY POSITION UPDATE ====================
-
-    /**
-     * Update a single position for intraday.
-     * Uses bitemporal pattern: close old version, insert new version.
-     */
-    public void updatePosition(Integer accountId, PositionDTO pos) {
-        Timestamp now = Timestamp.from(Instant.now());
-
-        // Close current version
-        jdbc.update("""
-                UPDATE Positions 
-                SET system_to = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE account_id = ? AND product_id = ? AND system_to = ?
-                """, now, accountId, pos.productId(), END_OF_TIME);
-
-        // Get active batch ID
-        Integer activeBatchId = getActiveBatchId(accountId);
-
-        // Insert new version
-        BigDecimal price = pos.price() != null ? pos.price() : BigDecimal.ZERO;
-        BigDecimal cost = pos.quantity().multiply(price);
-
-        jdbc.update("""
-                INSERT INTO Positions (
-                    account_id, product_id, quantity, avg_cost_price, cost_local,
-                    source_system, position_type, batch_id,
-                    system_from, system_to, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, 'INTRADAY', 'PHYSICAL', ?, ?, ?, CURRENT_TIMESTAMP)
-                """, accountId, pos.productId(), pos.quantity(), price, cost, activeBatchId != null ? activeBatchId : 0, now, END_OF_TIME);
-
-        log.debug("Updated position: account={}, product={}, qty={}", accountId, pos.productId(), pos.quantity());
-    }
-
-    /**
-     * Update position quantity by delta (for trade events).
-     */
-    public void updateQuantity(Integer accountId, Integer productId, BigDecimal delta) {
-        BigDecimal current = getQuantity(accountId, productId);
-        BigDecimal newQty = current.add(delta);
-
-        Timestamp now = Timestamp.from(Instant.now());
-
-        // Close old version
-        jdbc.update("""
-                UPDATE Positions 
-                SET system_to = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE account_id = ? AND product_id = ? AND system_to = ?
-                """, now, accountId, productId, END_OF_TIME);
-
-        // Insert new version
-        Integer activeBatchId = getActiveBatchId(accountId);
-
-        jdbc.update("""
-                INSERT INTO Positions (
-                    account_id, product_id, quantity, avg_cost_price, cost_local,
-                    source_system, position_type, batch_id,
-                    system_from, system_to, updated_at
-                )
-                VALUES (?, ?, ?, 0, 0, 'INTRADAY', 'PHYSICAL', ?, ?, ?, CURRENT_TIMESTAMP)
-                """, accountId, productId, newQty, activeBatchId != null ? activeBatchId : 0, now, END_OF_TIME);
-    }
-
-    // ==================== QUERIES ====================
-
-    /**
-     * Get current quantity for a position.
-     */
-    public BigDecimal getQuantity(Integer accountId, Integer productId) {
-        try {
-            return jdbc.queryForObject("""
-                    SELECT quantity FROM Positions
-                    WHERE account_id = ? AND product_id = ? AND system_to = ?
-                    """, BigDecimal.class, accountId, productId, END_OF_TIME);
-        } catch (Exception e) {
-            return BigDecimal.ZERO;
-        }
     }
 
     /**
@@ -211,30 +86,33 @@ public class PositionRepository {
     }
 
     /**
-     * Count current positions for an account.
+     * Update a single position (for intraday).
      */
-    public int countPositions(Integer accountId) {
-        Integer count = jdbc.queryForObject("""
-                SELECT COUNT(*) FROM Positions
-                WHERE account_id = ? AND system_to = ?
-                """, Integer.class, accountId, END_OF_TIME);
-        return count != null ? count : 0;
+    public void updatePosition(Integer accountId, PositionDTO pos) {
+        Integer batchId = getActiveBatchId(accountId);
+        if (batchId == null) batchId = 1;
+
+        BigDecimal cost = pos.quantity().multiply(pos.price());
+
+        jdbc.update("""
+                INSERT INTO Positions (account_id, product_id, quantity, avg_cost_price, cost_local,
+                    source_system, batch_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'INTRADAY', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (account_id, product_id, batch_id)
+                DO UPDATE SET quantity = EXCLUDED.quantity, avg_cost_price = EXCLUDED.avg_cost_price,
+                    cost_local = EXCLUDED.cost_local, updated_at = CURRENT_TIMESTAMP
+                """, accountId, pos.productId(), pos.quantity(), pos.price(), cost, batchId);
     }
 
     /**
-     * Bitemporal query: Get quantity as of a specific point in time.
-     * Used for audit/reconciliation.
+     * Count positions for an account.
      */
-    public BigDecimal getQuantityAsOf(Integer accountId, Integer productId, Timestamp businessDate, Timestamp systemTime) {
-        try {
-            return jdbc.queryForObject("""
-                    SELECT COALESCE(SUM(quantity), 0) FROM Transactions
-                    WHERE account_id = ? AND product_id = ?
-                      AND valid_from <= ? AND valid_to > ?
-                      AND system_from <= ? AND system_to > ?
-                    """, BigDecimal.class, accountId, productId, businessDate, businessDate, systemTime, systemTime);
-        } catch (Exception e) {
-            return BigDecimal.ZERO;
-        }
+    public int countPositions(Integer accountId) {
+        Integer count = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM Positions p
+                JOIN Account_Batches ab ON p.account_id = ab.account_id AND p.batch_id = ab.batch_id
+                WHERE p.account_id = ? AND ab.status = 'ACTIVE'
+                """, Integer.class, accountId);
+        return count != null ? count : 0;
     }
 }

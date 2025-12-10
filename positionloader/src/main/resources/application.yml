@@ -1,36 +1,19 @@
-# =====================================================
-# POSITION LOADER CONFIGURATION
-# =====================================================
-
 spring:
   application:
     name: positionloader
 
   # Database
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:5432/${DB_NAME:fxanalyzer}
-    username: ${DB_USERNAME:fxanalyzer}
-    password: ${DB_PASSWORD}
+    url: jdbc:postgresql://${DB_HOST:localhost}:5432/${DB_NAME:analyticsandtrading}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:password}
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5
-      connection-timeout: 10000
-      idle-timeout: 300000
-
-  # Redis Cache
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
-      timeout: 5s
 
   # Kafka
   kafka:
     bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
-    consumer:
-      group-id: positionloader-group
-      auto-offset-reset: earliest
-      enable-auto-commit: false
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
@@ -41,74 +24,33 @@ spring:
       max-file-size: 10MB
       max-request-size: 10MB
 
-# =====================================================
-# APPLICATION SETTINGS
-# =====================================================
-app:
-  eod:
-    max-concurrency: 50
-    timeout-minutes: 30
-    retry-failed: true
-
-  validation:
-    strict-mode: false
-    zero-price-threshold-pct: 10.0
-
-  cache:
-    enabled: true
-    ttl-hours: 24
-
-# =====================================================
-# UPSTREAM SERVICES
-# =====================================================
+# Upstream MSPM Service
 upstream:
   mspm:
-    base-url: ${MSPM_BASE_URL:http://mspm-service}
-    connect-timeout-ms: 5000
-    read-timeout-ms: 30000
+    base-url: ${MSPM_BASE_URL:http://localhost:8081/mspm}
+    timeout-seconds: 30
 
-# =====================================================
-# RESILIENCE4J
-# =====================================================
+# Resilience4j Circuit Breaker
 resilience4j:
   circuitbreaker:
     instances:
       mspm-service:
         sliding-window-size: 10
-        minimum-number-of-calls: 5
         failure-rate-threshold: 50
         wait-duration-in-open-state: 30s
 
-  ratelimiter:
-    instances:
-      mspm-service:
-        limit-for-period: 100
-        limit-refresh-period: 1s
-        timeout-duration: 5s
-
-# =====================================================
-# ACTUATOR
-# =====================================================
+# Actuator
 management:
   endpoints:
     web:
       exposure:
-        include: health,metrics,prometheus,info
+        include: health,metrics,prometheus
   endpoint:
     health:
       show-details: always
-  metrics:
-    export:
-      prometheus:
-        enabled: true
-    tags:
-      application: positionloader
 
-# =====================================================
-# LOGGING
-# =====================================================
+# Logging
 logging:
   level:
     root: INFO
     com.vyshali.positionloader: DEBUG
-    io.github.resilience4j: INFO

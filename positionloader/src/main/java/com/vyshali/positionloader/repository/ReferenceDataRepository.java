@@ -30,7 +30,6 @@ public class ReferenceDataRepository {
         ensureClient(snapshot.clientId(), snapshot.clientName());
         ensureFund(snapshot.fundId(), snapshot.clientId(), snapshot.fundName(), snapshot.baseCurrency());
         ensureAccount(snapshot);
-
         if (snapshot.positions() != null) {
             ensureProducts(snapshot.positions());
         }
@@ -38,40 +37,36 @@ public class ReferenceDataRepository {
 
     private void ensureClient(Integer clientId, String clientName) {
         jdbc.update("""
-                INSERT INTO Clients (client_id, client_name, status, updated_at) 
-                VALUES (?, ?, 'ACTIVE', CURRENT_TIMESTAMP) 
-                ON CONFLICT (client_id) DO UPDATE SET 
-                    client_name = EXCLUDED.client_name, updated_at = CURRENT_TIMESTAMP
+                INSERT INTO Clients (client_id, client_name, status, updated_at)
+                VALUES (?, ?, 'ACTIVE', CURRENT_TIMESTAMP)
+                ON CONFLICT (client_id) DO UPDATE SET client_name = EXCLUDED.client_name
                 """, clientId, clientName);
     }
 
     private void ensureFund(Integer fundId, Integer clientId, String fundName, String currency) {
         jdbc.update("""
-                INSERT INTO Funds (fund_id, client_id, fund_name, base_currency, status, updated_at) 
-                VALUES (?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP) 
-                ON CONFLICT (fund_id) DO UPDATE SET 
-                    fund_name = EXCLUDED.fund_name, base_currency = EXCLUDED.base_currency, updated_at = CURRENT_TIMESTAMP
+                INSERT INTO Funds (fund_id, client_id, fund_name, base_currency, status, updated_at)
+                VALUES (?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP)
+                ON CONFLICT (fund_id) DO UPDATE SET fund_name = EXCLUDED.fund_name
                 """, fundId, clientId, fundName, currency);
     }
 
     private void ensureAccount(AccountSnapshotDTO s) {
         jdbc.update("""
-                INSERT INTO Accounts (account_id, client_id, client_name, fund_id, fund_name, 
-                                      base_currency, account_number, account_type) 
+                INSERT INTO Accounts (account_id, client_id, client_name, fund_id, fund_name,
+                    base_currency, account_number, account_type)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (account_id) DO UPDATE SET 
-                    account_number = EXCLUDED.account_number, account_type = EXCLUDED.account_type
+                ON CONFLICT (account_id) DO UPDATE SET account_number = EXCLUDED.account_number
                 """, s.accountId(), s.clientId(), s.clientName(), s.fundId(), s.fundName(), s.baseCurrency(), s.accountNumber(), s.accountType());
     }
 
     private void ensureProducts(List<PositionDTO> positions) {
         for (PositionDTO p : positions) {
             jdbc.update("""
-                    INSERT INTO Products (product_id, ticker, asset_class, description, identifier_type, identifier_value) 
-                    VALUES (?, ?, ?, ?, 'TICKER', ?) 
-                    ON CONFLICT (product_id) DO UPDATE SET 
-                        ticker = EXCLUDED.ticker, identifier_value = EXCLUDED.identifier_value
-                    """, p.productId(), p.ticker(), p.assetClass() != null ? p.assetClass() : "EQUITY", "Imported: " + p.ticker(), p.ticker());
+                    INSERT INTO Products (product_id, ticker, asset_class, description)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (product_id) DO UPDATE SET ticker = EXCLUDED.ticker
+                    """, p.productId(), p.ticker(), p.assetClass(), "Imported: " + p.ticker());
         }
     }
 }

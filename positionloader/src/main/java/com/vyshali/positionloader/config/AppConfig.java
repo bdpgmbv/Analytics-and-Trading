@@ -5,53 +5,34 @@ package com.vyshali.positionloader.config;
  * @author Vyshali Prabananth Lal
  */
 
-import net.javacrumbs.shedlock.core.LockProvider;
-import net.javacrumbs.shedlock.provider.jdbctemplate.JdbcTemplateLockProvider;
-import net.javacrumbs.shedlock.spring.annotation.EnableSchedulerLock;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.client.RestClient;
 
-import javax.sql.DataSource;
 import java.net.http.HttpClient;
 import java.time.Duration;
 
 /**
- * Core application configuration.
- * Combines: REST clients, distributed locking, and common beans.
+ * Application configuration.
  */
 @Configuration
-@EnableSchedulerLock(defaultLockAtMostFor = "10m")
 public class AppConfig {
 
-    @Value("${upstream.mspm.base-url:http://mspm-service}")
+    @Value("${upstream.mspm.base-url:http://localhost:8081/mspm}")
     private String mspmBaseUrl;
 
-    @Value("${upstream.mspm.connect-timeout-ms:5000}")
-    private int connectTimeoutMs;
-
-    @Value("${upstream.mspm.read-timeout-ms:30000}")
-    private int readTimeoutMs;
-
-    // ==================== REST CLIENTS ====================
+    @Value("${upstream.mspm.timeout-seconds:30}")
+    private int timeoutSeconds;
 
     @Bean
     public RestClient mspmClient() {
-        HttpClient httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(connectTimeoutMs)).build();
+        HttpClient httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeoutSeconds)).build();
 
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
-        factory.setReadTimeout(Duration.ofMillis(readTimeoutMs));
+        factory.setReadTimeout(Duration.ofSeconds(timeoutSeconds));
 
-        return RestClient.builder().baseUrl(mspmBaseUrl).requestFactory(factory).defaultHeader("Accept", "application/json").defaultHeader("Content-Type", "application/json").build();
-    }
-
-    // ==================== DISTRIBUTED LOCKING ====================
-
-    @Bean
-    public LockProvider lockProvider(DataSource dataSource) {
-        return new JdbcTemplateLockProvider(JdbcTemplateLockProvider.Configuration.builder().withJdbcTemplate(new JdbcTemplate(dataSource)).usingDbTime().build());
+        return RestClient.builder().baseUrl(mspmBaseUrl).requestFactory(factory).defaultHeader("Accept", "application/json").build();
     }
 }

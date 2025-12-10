@@ -11,52 +11,30 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
-import org.springframework.kafka.core.*;
-import org.springframework.kafka.listener.*;
-import org.springframework.util.backoff.FixedBackOff;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.listener.ContainerProperties;
 
 import java.util.HashMap;
 import java.util.Map;
 
 /**
  * Kafka configuration for Position Loader.
- * <p>
- * Topics:
- * - MSPM_EOD_TRIGGER: EOD triggers from MSPM (account IDs)
- * - MSPA_INTRADAY: Intraday batches from MSPA (position updates)
- * - POSITION_CHANGE_EVENTS: Published when positions change
- * - CLIENT_REPORTING_SIGNOFF: Published when client completes EOD
  */
 @Configuration
 public class KafkaConfig {
 
-    @Value("${spring.kafka.bootstrap-servers}")
-    private String bootstrapServers;
-
-    // ==================== TOPICS ====================
-
+    // Topic names
     public static final String TOPIC_EOD_TRIGGER = "MSPM_EOD_TRIGGER";
     public static final String TOPIC_INTRADAY = "MSPA_INTRADAY";
     public static final String TOPIC_POSITION_CHANGES = "POSITION_CHANGE_EVENTS";
     public static final String TOPIC_SIGNOFF = "CLIENT_REPORTING_SIGNOFF";
 
-    // ==================== CONSUMER GROUPS ====================
-
-    public static final String GROUP_EOD = "positionloader-eod-group";
-    public static final String GROUP_INTRADAY = "positionloader-intraday-group";
-
-    // ==================== ERROR HANDLING ====================
+    @Value("${spring.kafka.bootstrap-servers}")
+    private String bootstrapServers;
 
     @Bean
-    public CommonErrorHandler kafkaErrorHandler(KafkaTemplate<Object, Object> template) {
-        // Send failed messages to DLQ after 3 retries
-        return new DefaultErrorHandler(new DeadLetterPublishingRecoverer(template), new FixedBackOff(1000L, 3));
-    }
-
-    // ==================== CONSUMER FACTORY ====================
-
-    @Bean
-    public ConsumerFactory<String, String> stringConsumerFactory() {
+    public ConsumerFactory<String, String> consumerFactory() {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
@@ -66,32 +44,20 @@ public class KafkaConfig {
         return new DefaultKafkaConsumerFactory<>(props);
     }
 
-    // ==================== LISTENER FACTORIES ====================
-
-    /**
-     * Factory for EOD triggers (single record processing).
-     */
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, String> eodFactory(ConsumerFactory<String, String> stringConsumerFactory, CommonErrorHandler kafkaErrorHandler) {
-
+    public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory(ConsumerFactory<String, String> consumerFactory) {
         var factory = new ConcurrentKafkaListenerContainerFactory<String, String>();
-        factory.setConsumerFactory(stringConsumerFactory);
+        factory.setConsumerFactory(consumerFactory);
         factory.setBatchListener(false);
-        factory.setCommonErrorHandler(kafkaErrorHandler);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         return factory;
     }
 
-    /**
-     * Factory for intraday batches (batch processing 1-100 records).
-     */
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, String> batchFactory(ConsumerFactory<String, String> stringConsumerFactory, CommonErrorHandler kafkaErrorHandler) {
-
+    public ConcurrentKafkaListenerContainerFactory<String, String> batchFactory(ConsumerFactory<String, String> consumerFactory) {
         var factory = new ConcurrentKafkaListenerContainerFactory<String, String>();
-        factory.setConsumerFactory(stringConsumerFactory);
+        factory.setConsumerFactory(consumerFactory);
         factory.setBatchListener(true);
-        factory.setCommonErrorHandler(kafkaErrorHandler);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         return factory;
     }
