@@ -1,124 +1,250 @@
 package com.vyshali.hedgeservice.fix;
 
 /*
- * 12/04/2025 - 2:34 PM
+ * 12/10/2025 - FIXED: Removed duplicate package declaration (was on lines 1 AND 8)
  * @author Vyshali Prabananth Lal
+ *
+ * FIX Protocol Engine for executing hedge trades via FX Matrix
  */
 
-package com.vyshali.hedgeservice.fix;
-
-import com.vyshali.hedgeservice.dto.HedgeExecutionRequestDTO;
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired; // Use Autowired for circular dep avoidance if needed
-import org.springframework.kafka.core.KafkaTemplate; // <--- NEW
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import quickfix.*;
 import quickfix.field.*;
-import quickfix.fix44.ExecutionReport;
 import quickfix.fix44.NewOrderSingle;
+import quickfix.fix44.ExecutionReport;
+
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 @Slf4j
 @Component
-public class FixEngine extends MessageCracker implements Application {
+public class FixEngine implements Application {
 
+    @Value("${fix.config.path:fix-client.cfg}")
+    private String configPath;
+
+    @Value("${fix.sender.comp.id:FXANALYZER}")
+    private String senderCompId;
+
+    @Value("${fix.target.comp.id:FXMATRIX}")
+    private String targetCompId;
+
+    private SessionID sessionId;
     private SocketInitiator initiator;
-    private SessionID activeSession;
+    private final ConcurrentMap<String, OrderCallback> pendingOrders = new ConcurrentHashMap<>();
 
-    // Inject Kafka to close the loop
-    @Autowired
-    private KafkaTemplate<String, Object> kafkaTemplate;
+    @FunctionalInterface
+    public interface OrderCallback {
+        void onExecutionReport(String clOrdId, String execType, BigDecimal fillQty, BigDecimal fillPx, String ordStatus);
+    }
 
     @PostConstruct
-    public void start() {
-        // ... (Existing startup code) ...
+    public void init() {
         try {
-            SessionSettings settings = new SessionSettings(getClass().getResourceAsStream("/quickfix-client.cfg"));
-            FileStoreFactory storeFactory = new FileStoreFactory(settings);
-            LogFactory logFactory = new ScreenLogFactory(settings);
+            SessionSettings settings = new SessionSettings(configPath);
+            MessageStoreFactory storeFactory = new FileStoreFactory(settings);
+            LogFactory logFactory = new FileLogFactory(settings);
             MessageFactory messageFactory = new DefaultMessageFactory();
+
             initiator = new SocketInitiator(this, storeFactory, settings, logFactory, messageFactory);
             initiator.start();
-            log.info("FIX Engine Started.");
-        } catch (Exception e) {
-            log.error("Failed to start FIX Engine", e);
+            log.info("FIX Engine started - SenderCompID: {}, TargetCompID: {}", senderCompId, targetCompId);
+        } catch (ConfigError e) {
+            log.error("FIX configuration error: {}", e.getMessage());
+            throw new RuntimeException("Failed to initialize FIX engine", e);
         }
     }
 
     @PreDestroy
-    public void stop() {
-        if (initiator != null) initiator.stop();
-    }
-
-    public String sendOrder(HedgeExecutionRequestDTO request) {
-        if (activeSession == null) throw new RuntimeException("FIX Session Down");
-
-        String clOrdId = UUID.randomUUID().toString();
-        NewOrderSingle order = new NewOrderSingle(
-                new ClOrdID(clOrdId),
-                new Side(request.side().equalsIgnoreCase("BUY") ? Side.BUY : Side.SELL),
-                new TransactTime(LocalDateTime.now()),
-                new OrdType(OrdType.MARKET)
-        );
-        order.set(new Symbol(request.currencyPair()));
-        order.set(new OrderQty(request.quantity().doubleValue()));
-        order.set(new HandlInst('1'));
-
-        try {
-            Session.sendToTarget(order, activeSession);
-            return clOrdId;
-        } catch (SessionNotFound e) {
-            throw new RuntimeException("Session Lost");
+    public void shutdown() {
+        if (initiator != null) {
+            initiator.stop();
+            log.info("FIX Engine stopped");
         }
     }
 
-    // --- CALLBACKS ---
-    // ... (onCreate, onLogon, onLogout, toAdmin, fromAdmin, toApp same as before) ...
-    @Override public void onCreate(SessionID sessionId) {}
-    @Override public void onLogon(SessionID sessionId) { this.activeSession = sessionId; }
-    @Override public void onLogout(SessionID sessionId) { this.activeSession = null; }
-    @Override public void toAdmin(Message message, SessionID sessionId) {}
-    @Override public void fromAdmin(Message message, SessionID sessionId) throws FieldNotFound, IncorrectDataFormat, IncorrectTagValue, RejectLogon {}
-    @Override public void toApp(Message message, SessionID sessionId) throws DoNotSend {}
+    // ============================================================
+    // Application Interface Implementation
+    // ============================================================
 
     @Override
-    public void fromApp(Message message, SessionID sessionId) throws FieldNotFound, IncorrectDataFormat, UnsupportedMessageType, IncorrectTagValue {
-        crack(message, sessionId);
+    public void onCreate(SessionID sessionId) {
+        this.sessionId = sessionId;
+        log.info("FIX session created: {}", sessionId);
     }
 
-    // --- THE CRITICAL FIX ---
-    public void onMessage(ExecutionReport message, SessionID sessionID) throws FieldNotFound {
-        String execId = message.getExecID().getValue();
-        String orderId = message.getClOrdID().getValue(); // Correlate with our ClOrdId
-        double filledQty = message.getCumQty().getValue();
-        double price = message.getAvgPx().getValue();
-        String symbol = message.getSymbol().getValue();
-        String side = message.getSide().getValue() == Side.BUY ? "BUY" : "SELL";
+    @Override
+    public void onLogon(SessionID sessionId) {
+        log.info("FIX session logged on: {}", sessionId);
+    }
 
-        log.info("FIX FILL: ID={} Order={} Qty={} Price={}", execId, orderId, filledQty, price);
+    @Override
+    public void onLogout(SessionID sessionId) {
+        log.warn("FIX session logged out: {}", sessionId);
+    }
 
-        // 1. Create a DTO that matches TradeFillProcessor's expectation
-        // We reuse the DTO format defined in common or replicate it here
-        // Assuming JSON serialization:
-        String jsonPayload = String.format("""
-            {
-                "execId": "%s",
-                "orderId": "%s",
-                "symbol": "%s",
-                "side": "%s",
-                "lastQty": %f,
-                "lastPx": %f,
-                "status": "FILLED",
-                "venue": "FIX_EXCHANGE"
+    @Override
+    public void toAdmin(Message message, SessionID sessionId) {
+        // Outgoing admin messages (logon, heartbeat, etc.)
+    }
+
+    @Override
+    public void fromAdmin(Message message, SessionID sessionId) throws FieldNotFound, IncorrectDataFormat, IncorrectTagValue, RejectLogon {
+        // Incoming admin messages
+    }
+
+    @Override
+    public void toApp(Message message, SessionID sessionId) throws DoNotSend {
+        log.debug("Sending FIX message: {}", message);
+    }
+
+    @Override
+    public void fromApp(Message message, SessionID sessionId) throws FieldNotFound, IncorrectDataFormat, IncorrectTagValue, UnsupportedMessageType {
+
+        if (message instanceof ExecutionReport report) {
+            handleExecutionReport(report);
+        }
+    }
+
+    // ============================================================
+    // Order Submission
+    // ============================================================
+
+    /**
+     * Send a new FX order to FX Matrix
+     *
+     * @param currencyPair e.g., "EUR/USD"
+     * @param side         BUY or SELL
+     * @param quantity     Amount in base currency
+     * @param orderType    MARKET or LIMIT
+     * @param limitPrice   Price for limit orders (null for market)
+     * @param callback     Callback for execution reports
+     * @return Client Order ID
+     */
+    public String sendOrder(String currencyPair, Side side, BigDecimal quantity, OrdType orderType, BigDecimal limitPrice, OrderCallback callback) {
+
+        String clOrdId = generateClOrdId();
+
+        try {
+            NewOrderSingle order = new NewOrderSingle(new ClOrdID(clOrdId), side, new TransactTime(LocalDateTime.now()), orderType);
+
+            // Set symbol (currency pair)
+            order.set(new Symbol(currencyPair));
+
+            // Set quantity
+            order.set(new OrderQty(quantity.doubleValue()));
+
+            // Set price for limit orders
+            if (orderType.getValue() == OrdType.LIMIT && limitPrice != null) {
+                order.set(new Price(limitPrice.doubleValue()));
             }
-        """, execId, orderId, symbol, side, filledQty, price);
 
-        // 2. Publish to Kafka (TradeFillProcessor listens to RAW_EXECUTION_REPORTS)
-        kafkaTemplate.send("RAW_EXECUTION_REPORTS", orderId, jsonPayload);
+            // Time in force - Day order
+            order.set(new TimeInForce(TimeInForce.DAY));
+
+            // Custom fields for FX
+            order.setString(15, extractBaseCurrency(currencyPair));  // Currency
+
+            // Register callback
+            if (callback != null) {
+                pendingOrders.put(clOrdId, callback);
+            }
+
+            // Send order
+            Session.sendToTarget(order, sessionId);
+
+            log.info("Order sent - ClOrdId: {}, Pair: {}, Side: {}, Qty: {}", clOrdId, currencyPair, side, quantity);
+
+            return clOrdId;
+
+        } catch (SessionNotFound e) {
+            log.error("FIX session not found: {}", e.getMessage());
+            throw new RuntimeException("Cannot send order - FIX session not available", e);
+        }
+    }
+
+    /**
+     * Send market order (convenience method)
+     */
+    public String sendMarketOrder(String currencyPair, boolean isBuy, BigDecimal quantity, OrderCallback callback) {
+        return sendOrder(currencyPair, isBuy ? new Side(Side.BUY) : new Side(Side.SELL), quantity, new OrdType(OrdType.MARKET), null, callback);
+    }
+
+    /**
+     * Send limit order (convenience method)
+     */
+    public String sendLimitOrder(String currencyPair, boolean isBuy, BigDecimal quantity, BigDecimal limitPrice, OrderCallback callback) {
+        return sendOrder(currencyPair, isBuy ? new Side(Side.BUY) : new Side(Side.SELL), quantity, new OrdType(OrdType.LIMIT), limitPrice, callback);
+    }
+
+    // ============================================================
+    // Execution Report Handling
+    // ============================================================
+
+    private void handleExecutionReport(ExecutionReport report) throws FieldNotFound {
+        String clOrdId = report.getClOrdID().getValue();
+        char execType = report.getExecType().getValue();
+        char ordStatus = report.getOrdStatus().getValue();
+
+        BigDecimal fillQty = BigDecimal.ZERO;
+        BigDecimal fillPx = BigDecimal.ZERO;
+
+        if (report.isSetLastQty()) {
+            fillQty = BigDecimal.valueOf(report.getLastQty().getValue());
+        }
+        if (report.isSetLastPx()) {
+            fillPx = BigDecimal.valueOf(report.getLastPx().getValue());
+        }
+
+        log.info("Execution Report - ClOrdId: {}, ExecType: {}, OrdStatus: {}, " + "FillQty: {}, FillPx: {}", clOrdId, execType, ordStatus, fillQty, fillPx);
+
+        // Invoke callback if registered
+        OrderCallback callback = pendingOrders.get(clOrdId);
+        if (callback != null) {
+            callback.onExecutionReport(clOrdId, String.valueOf(execType), fillQty, fillPx, String.valueOf(ordStatus));
+
+            // Remove callback if order is terminal
+            if (ordStatus == OrdStatus.FILLED || ordStatus == OrdStatus.CANCELED || ordStatus == OrdStatus.REJECTED) {
+                pendingOrders.remove(clOrdId);
+            }
+        }
+    }
+
+    // ============================================================
+    // Helpers
+    // ============================================================
+
+    private String generateClOrdId() {
+        return "FXA-" + System.currentTimeMillis() + "-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+    }
+
+    private String extractBaseCurrency(String currencyPair) {
+        // "EUR/USD" -> "EUR"
+        if (currencyPair != null && currencyPair.contains("/")) {
+            return currencyPair.split("/")[0];
+        }
+        return currencyPair != null ? currencyPair.substring(0, 3) : "USD";
+    }
+
+    /**
+     * Check if FIX session is connected
+     */
+    public boolean isConnected() {
+        return sessionId != null && Session.lookupSession(sessionId) != null && Session.lookupSession(sessionId).isLoggedOn();
+    }
+
+    /**
+     * Get count of pending orders
+     */
+    public int getPendingOrderCount() {
+        return pendingOrders.size();
     }
 }
