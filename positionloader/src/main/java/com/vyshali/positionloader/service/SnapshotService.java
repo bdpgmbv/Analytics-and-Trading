@@ -1,266 +1,341 @@
 package com.vyshali.positionloader.service;
 
 /*
- * UPDATED: SnapshotService with batch operations and improved metrics
+ * 12/10/2025 - MERGED: SnapshotService now includes EodService functionality
  *
- * Changes:
- * 1. Use batch updatePositions() for intraday (instead of loop)
- * 2. Better metrics integration
- * 3. Cache-aware reference data handling
+ * BEFORE:
+ * - EodService: thin wrapper calling SnapshotService
+ * - SnapshotService: actual EOD logic
+ * - Unnecessary indirection
+ *
+ * AFTER:
+ * - Single SnapshotService handles all EOD and Intraday processing
+ * - Domain events for decoupling
+ * - Cleaner API
+ *
+ * @author Vyshali Prabananth Lal
  */
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.vyshali.positionloader.config.KafkaConfig;
-import com.vyshali.positionloader.dto.AccountSnapshotDTO;
-import com.vyshali.positionloader.dto.Events;
-import com.vyshali.positionloader.dto.PositionDTO;
-import com.vyshali.positionloader.repository.AuditRepository;
+import com.vyshali.positionloader.config.TracingConfig.SpanCreator;
+import com.vyshali.positionloader.dto.MspmPositionResponse;
+import com.vyshali.positionloader.dto.PositionDto;
+import com.vyshali.positionloader.event.DomainEvents.*;
 import com.vyshali.positionloader.repository.PositionRepository;
 import com.vyshali.positionloader.repository.ReferenceDataRepository;
-import io.micrometer.core.instrument.Timer;
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class SnapshotService {
 
-    private final MspmService mspm;
+    private final MspmClient mspmClient;
     private final PositionRepository positions;
     private final ReferenceDataRepository refData;
-    private final AuditRepository audit;
-    private final KafkaTemplate<String, Object> kafka;
-    private final ObjectMapper json;
+    private final IdempotencyService idempotency;
     private final MetricsService metrics;
-
-    // Idempotency: Track processed external refs
-    // TODO: Replace with Redis in production for persistence across restarts
-    private final Set<String> processedRefs = ConcurrentHashMap.newKeySet();
-
-    @Value("${features.idempotency.enabled:true}")
-    private boolean idempotencyEnabled;
+    private final ApplicationEventPublisher events;
+    private final SpanCreator spanCreator;
 
     @Value("${features.caching.enabled:true}")
     private boolean cachingEnabled;
 
-    // ==================== FLOW 1: EOD ====================
+    @Value("${features.idempotency.enabled:true}")
+    private boolean idempotencyEnabled;
 
-    public void processEod(Integer accountId) {
-        Timer.Sample timer = metrics.startAccountTimer();
-        log.info("Starting EOD: account={}", accountId);
+    @Value("${features.zero-price-filter.enabled:true}")
+    private boolean zeroPriceFilterEnabled;
 
-        try {
-            // Fetch from MSPM
-            Timer.Sample mspmTimer = metrics.startMspmTimer();
-            AccountSnapshotDTO snapshot;
-            try {
-                snapshot = mspm.fetchSnapshot(accountId);
-            } catch (Exception e) {
-                metrics.recordMspmFailure();
-                throw e;
+    // ==================== EOD PROCESSING (formerly in EodService) ====================
+
+    /**
+     * Process EOD for a single account.
+     * This is the main entry point for EOD processing.
+     */
+    @Observed(name = "eod.account.process", contextualName = "process-eod-account")
+    @Transactional
+    public EodResult processEodForAccount(Integer accountId, Integer clientId, LocalDate businessDate) {
+        long startTime = System.currentTimeMillis();
+        log.info("Starting EOD: account={}, date={}", accountId, businessDate);
+
+        // Publish start event
+        events.publishEvent(new EodStarted(accountId, clientId, businessDate));
+
+        try (var span = spanCreator.startSpan("eod-account", "accountId", accountId.toString())) {
+            // 1. Fetch positions from MSPM
+            span.event("fetching-mspm");
+            List<MspmPositionResponse> mspmPositions = mspmClient.fetchPositions(accountId, businessDate);
+
+            if (mspmPositions.isEmpty()) {
+                log.warn("No positions from MSPM: account={}", accountId);
+                return EodResult.empty(accountId, businessDate);
             }
-            metrics.stopMspmTimer(mspmTimer);
 
-            if (snapshot == null) {
-                metrics.recordAccountFailure();
-                throw new UpstreamException("MSPM returned null for account " + accountId);
-            }
+            // 2. Transform and validate
+            span.event("transforming");
+            List<PositionDto> validated = transformAndValidate(mspmPositions, accountId, clientId);
 
-            // Validate and save
-            validate(snapshot);
-            saveEodSnapshot(snapshot);
+            // 3. Save snapshot
+            span.event("saving-snapshot");
+            int savedCount = saveEodSnapshot(accountId, clientId, validated, businessDate);
 
-            metrics.recordAccountSuccess();
-            log.info("EOD complete: account={}, positions={}", accountId, snapshot.positionCount());
+            long durationMs = System.currentTimeMillis() - startTime;
+
+            // 4. Publish completion event
+            events.publishEvent(new EodCompleted(accountId, clientId, businessDate, savedCount, durationMs));
+
+            log.info("EOD complete: account={}, positions={}, duration={}ms", accountId, savedCount, durationMs);
+
+            return new EodResult(accountId, businessDate, savedCount, durationMs, true, null);
 
         } catch (Exception e) {
-            metrics.recordAccountFailure();
-            throw e;
-        } finally {
-            metrics.stopAccountTimer(timer);
-        }
-    }
+            log.error("EOD failed: account={}, error={}", accountId, e.getMessage(), e);
 
-    @Transactional
-    public void saveEodSnapshot(AccountSnapshotDTO snapshot) {
-        Integer accountId = snapshot.accountId();
-        List<PositionDTO> positionList = sanitizeAndDedupe(snapshot.positions());
+            // Publish failure event
+            events.publishEvent(new EodFailed(accountId, clientId, businessDate, e.getMessage(), e.getClass().getSimpleName()));
 
-        Timer.Sample dbTimer = metrics.startDbTimer();
-
-        // 1. Ensure reference data (uses cache)
-        refData.ensureReferenceData(snapshot);
-
-        // 2. Create batch + BATCH INSERT + activate (atomic)
-        int batchId = positions.createBatch(accountId);
-        if (!positionList.isEmpty()) {
-            // UPDATED: Uses batch insert (5-10x faster)
-            positions.insertPositions(accountId, positionList, "MSPM_EOD", batchId);
-        }
-        positions.activateBatch(accountId, batchId);
-
-        metrics.stopDbTimer(dbTimer);
-
-        // 3. Mark complete + publish events
-        LocalDate today = LocalDate.now();
-        audit.markAccountComplete(accountId, snapshot.clientId(), today);
-        publishPositionChange("EOD_COMPLETE", snapshot);
-
-        // 4. Check client completion
-        if (audit.isClientComplete(snapshot.clientId(), today)) {
-            publishClientSignOff(snapshot.clientId(), today);
-        }
-    }
-
-    // ==================== FLOW 2: INTRADAY ====================
-
-    public void processIntradayRecord(String jsonRecord) {
-        try {
-            AccountSnapshotDTO snapshot = json.readValue(jsonRecord, AccountSnapshotDTO.class);
-            processIntraday(snapshot);
-        } catch (Exception e) {
-            log.error("Failed to parse intraday: {}", e.getMessage());
-            throw new InvalidDataException("Invalid intraday record", e);
-        }
-    }
-
-    @Transactional
-    public void processIntraday(AccountSnapshotDTO snapshot) {
-        Integer accountId = snapshot.accountId();
-        List<PositionDTO> positionList = sanitizeAndDedupe(snapshot.positions());
-
-        if (positionList.isEmpty()) {
-            log.debug("No positions to process for intraday account {}", accountId);
-            return;
-        }
-
-        // Ensure reference data (uses cache - fast)
-        refData.ensureReferenceData(snapshot);
-
-        // UPDATED: Use batch update instead of loop
-        // Before: for (pos : positions) { positions.updatePosition(accountId, pos); }
-        // After:  Single batch call
-        positions.updatePositions(accountId, positionList);
-
-        publishPositionChange("INTRADAY_UPDATE", snapshot);
-
-        log.debug("Intraday complete: account={}, positions={}", accountId, positionList.size());
-    }
-
-    // ==================== FLOW 3: MANUAL UPLOAD ====================
-
-    @Transactional
-    public void processManualUpload(AccountSnapshotDTO snapshot, String uploadedBy) {
-        validate(snapshot);
-
-        Integer accountId = snapshot.accountId();
-        List<PositionDTO> positionList = sanitizeAndDedupe(snapshot.positions());
-
-        refData.ensureReferenceData(snapshot);
-
-        int batchId = positions.createBatch(accountId);
-        if (!positionList.isEmpty()) {
-            // BATCH INSERT
-            positions.insertPositions(accountId, positionList, "MANUAL_UPLOAD", batchId);
-        }
-        positions.activateBatch(accountId, batchId);
-
-        audit.log("MANUAL_UPLOAD", accountId.toString(), uploadedBy, "Uploaded " + positionList.size() + " positions");
-        publishPositionChange("MANUAL_UPLOAD", snapshot);
-
-        log.info("Manual upload: account={}, positions={}, by={}", accountId, positionList.size(), uploadedBy);
-    }
-
-    // ==================== VALIDATION ====================
-
-    private void validate(AccountSnapshotDTO snapshot) {
-        if (snapshot.accountId() == null) {
-            metrics.recordValidationError();
-            throw new ValidationException("Account ID is required");
-        }
-
-        if (snapshot.positions() != null) {
-            long zeroPriceCount = snapshot.positions().stream().filter(PositionDTO::hasZeroPrice).count();
-
-            if (zeroPriceCount > 0) {
-                metrics.recordZeroPriceDetected((int) zeroPriceCount);
-                log.warn("Account {} has {} zero-price positions", snapshot.accountId(), zeroPriceCount);
-            }
+            return new EodResult(accountId, businessDate, 0, System.currentTimeMillis() - startTime, false, e.getMessage());
         }
     }
 
     /**
-     * Sanitize positions AND dedupe by externalRefId.
-     * This provides idempotency for reprocessed messages.
+     * Process EOD for all accounts of a client.
      */
-    private List<PositionDTO> sanitizeAndDedupe(List<PositionDTO> list) {
-        if (list == null) return List.of();
+    @Observed(name = "eod.client.process", contextualName = "process-eod-client")
+    public ClientEodResult processEodForClient(Integer clientId, LocalDate businessDate) {
+        long startTime = System.currentTimeMillis();
+        log.info("Starting client EOD: client={}, date={}", clientId, businessDate);
 
-        return list.stream().filter(p -> p != null && p.productId() != null).filter(p -> {
-            // Idempotency check (skip if disabled)
-            if (!idempotencyEnabled) return true;
+        // Get all accounts for client
+        List<Integer> accountIds = refData.getAccountsForClient(clientId);
+        if (accountIds.isEmpty()) {
+            log.warn("No accounts found for client: {}", clientId);
+            return new ClientEodResult(clientId, businessDate, 0, 0, 0, List.of());
+        }
 
-            if (p.externalRefId() != null) {
-                if (processedRefs.contains(p.externalRefId())) {
-                    log.debug("Skipping duplicate: {}", p.externalRefId());
-                    metrics.recordCacheHit();  // Track as "duplicate avoided"
-                    return false;
-                }
-                processedRefs.add(p.externalRefId());
-                metrics.recordCacheMiss();
+        List<EodResult> results = new ArrayList<>();
+        int successCount = 0;
+        int failCount = 0;
 
-                // Cleanup: Prevent unbounded growth
-                // In production: Use Redis with TTL instead
-                if (processedRefs.size() > 100_000) {
-                    log.warn("Idempotency set exceeds 100k entries, clearing...");
-                    processedRefs.clear();
-                }
+        for (Integer accountId : accountIds) {
+            EodResult result = processEodForAccount(accountId, clientId, businessDate);
+            results.add(result);
+            if (result.success()) {
+                successCount++;
+            } else {
+                failCount++;
             }
-            return true;
-        }).toList();
+        }
+
+        long durationMs = System.currentTimeMillis() - startTime;
+
+        // Publish client sign-off if all successful
+        if (failCount == 0) {
+            events.publishEvent(new ClientSignOffCompleted(clientId, businessDate, accountIds.size(), durationMs));
+        }
+
+        log.info("Client EOD complete: client={}, success={}, failed={}, duration={}ms", clientId, successCount, failCount, durationMs);
+
+        return new ClientEodResult(clientId, businessDate, successCount, failCount, durationMs, results);
     }
 
-    // ==================== EVENT PUBLISHING ====================
-
-    private void publishPositionChange(String eventType, AccountSnapshotDTO snapshot) {
-        var event = new Events.PositionChange(eventType, snapshot.accountId(), snapshot.clientId(), snapshot.positionCount());
-        kafka.send(KafkaConfig.TOPIC_POSITION_CHANGES, snapshot.accountId().toString(), event);
+    /**
+     * Check if client EOD is complete (all accounts processed).
+     */
+    public boolean isClientEodComplete(Integer clientId, LocalDate businessDate) {
+        return refData.areAllAccountsComplete(clientId, businessDate);
     }
 
-    private void publishClientSignOff(Integer clientId, LocalDate date) {
-        int totalAccounts = audit.countClientAccounts(clientId);
-        var event = new Events.ClientSignOff(clientId, date, totalAccounts);
-        kafka.send(KafkaConfig.TOPIC_SIGNOFF, clientId.toString(), event);
-        log.info("Client sign-off: clientId={}", clientId);
+    // ==================== INTRADAY PROCESSING ====================
+
+    /**
+     * Process intraday position update.
+     */
+    @Observed(name = "intraday.process", contextualName = "process-intraday")
+    @Transactional
+    public int processIntraday(Integer accountId, Integer clientId, List<PositionDto> incomingPositions) {
+        log.debug("Processing intraday: account={}, count={}", accountId, incomingPositions.size());
+
+        // Filter duplicates using idempotency service
+        List<PositionDto> deduplicated = filterDuplicates(incomingPositions);
+        if (deduplicated.isEmpty()) {
+            log.debug("All positions were duplicates: account={}", accountId);
+            return 0;
+        }
+
+        // Apply zero-price filter
+        List<PositionDto> validated = filterZeroPrices(deduplicated, accountId);
+
+        // Batch update
+        int updatedCount = positions.updatePositions(validated);
+
+        // Mark as processed for idempotency
+        markProcessed(validated);
+
+        // Publish event
+        int batchId = positions.getActiveBatchId(accountId);
+        events.publishEvent(new PositionsUpdated(accountId, clientId, "INTRADAY", updatedCount, batchId));
+
+        metrics.recordIntradayUpdate(updatedCount);
+        return updatedCount;
     }
 
-    // ==================== CUSTOM EXCEPTIONS ====================
+    // ==================== SNAPSHOT OPERATIONS ====================
 
-    public static class ValidationException extends IllegalArgumentException {
-        public ValidationException(String message) {
-            super(message);
+    /**
+     * Save EOD snapshot with batch swap.
+     */
+    @Transactional
+    public int saveEodSnapshot(Integer accountId, Integer clientId, List<PositionDto> positionDtos, LocalDate businessDate) {
+        log.debug("Saving EOD snapshot: account={}, positions={}", accountId, positionDtos.size());
+
+        // Get current and next batch IDs
+        int currentBatch = positions.getActiveBatchId(accountId);
+        int nextBatch = (currentBatch == 1) ? 2 : 1;
+
+        // Clear next batch and insert new positions
+        positions.clearBatch(accountId, nextBatch);
+        int insertedCount = positions.insertPositions(positionDtos, nextBatch, businessDate);
+
+        // Swap active batch
+        positions.setActiveBatch(accountId, nextBatch);
+
+        // Publish batch swap event
+        events.publishEvent(new BatchSwapped(accountId, currentBatch, nextBatch));
+
+        // Mark all as processed
+        markProcessed(positionDtos);
+
+        metrics.recordEodSnapshot(insertedCount);
+        return insertedCount;
+    }
+
+    // ==================== VALIDATION & TRANSFORMATION ====================
+
+    /**
+     * Transform MSPM response to DTOs and validate.
+     */
+    private List<PositionDto> transformAndValidate(List<MspmPositionResponse> mspmPositions, Integer accountId, Integer clientId) {
+        List<PositionDto> result = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        int duplicateCount = 0;
+        int zeroPriceCount = 0;
+
+        for (MspmPositionResponse mspm : mspmPositions) {
+            // Dedupe by external ref
+            String key = mspm.getExternalRefId();
+            if (key != null && !seen.add(key)) {
+                duplicateCount++;
+                continue;
+            }
+
+            // Zero price filter
+            if (zeroPriceFilterEnabled && isZeroPrice(mspm.getPrice())) {
+                zeroPriceCount++;
+                continue;
+            }
+
+            // Transform
+            PositionDto dto = PositionDto.builder().accountId(accountId).clientId(clientId).productId(mspm.getProductId()).quantity(mspm.getQuantity()).price(mspm.getPrice()).marketValue(calculateMarketValue(mspm.getQuantity(), mspm.getPrice())).externalRefId(mspm.getExternalRefId()).currency(mspm.getCurrency()).build();
+
+            result.add(dto);
+        }
+
+        // Publish validation issues if any
+        if (duplicateCount > 0) {
+            events.publishEvent(new ValidationIssueDetected(accountId, "DUPLICATE", duplicateCount, List.of()));
+        }
+        if (zeroPriceCount > 0) {
+            events.publishEvent(new ValidationIssueDetected(accountId, "ZERO_PRICE", zeroPriceCount, List.of()));
+        }
+
+        log.debug("Validated: account={}, valid={}, duplicates={}, zeroPrices={}", accountId, result.size(), duplicateCount, zeroPriceCount);
+
+        return result;
+    }
+
+    /**
+     * Filter duplicates using idempotency service.
+     */
+    private List<PositionDto> filterDuplicates(List<PositionDto> positions) {
+        if (!idempotencyEnabled) {
+            return positions;
+        }
+
+        return positions.stream().filter(p -> p.getExternalRefId() == null || !idempotency.isDuplicate(p.getExternalRefId())).toList();
+    }
+
+    /**
+     * Filter zero-price positions.
+     */
+    private List<PositionDto> filterZeroPrices(List<PositionDto> positions, Integer accountId) {
+        if (!zeroPriceFilterEnabled) {
+            return positions;
+        }
+
+        List<PositionDto> valid = new ArrayList<>();
+        int filtered = 0;
+
+        for (PositionDto p : positions) {
+            if (isZeroPrice(p.getPrice())) {
+                filtered++;
+            } else {
+                valid.add(p);
+            }
+        }
+
+        if (filtered > 0) {
+            metrics.recordZeroPriceDetected(filtered);
+            events.publishEvent(new ValidationIssueDetected(accountId, "ZERO_PRICE", filtered, List.of()));
+        }
+
+        return valid;
+    }
+
+    /**
+     * Mark positions as processed in idempotency service.
+     */
+    private void markProcessed(List<PositionDto> positions) {
+        if (!idempotencyEnabled) return;
+
+        List<String> refIds = positions.stream().map(PositionDto::getExternalRefId).filter(Objects::nonNull).toList();
+
+        idempotency.markProcessedBatch(refIds);
+    }
+
+    private boolean isZeroPrice(BigDecimal price) {
+        return price == null || price.compareTo(BigDecimal.ZERO) == 0;
+    }
+
+    private BigDecimal calculateMarketValue(BigDecimal quantity, BigDecimal price) {
+        if (quantity == null || price == null) return BigDecimal.ZERO;
+        return quantity.multiply(price);
+    }
+
+    // ==================== RESULT DTOs ====================
+
+    public record EodResult(Integer accountId, LocalDate businessDate, int positionCount, long durationMs,
+                            boolean success, String errorMessage) {
+        public static EodResult empty(Integer accountId, LocalDate date) {
+            return new EodResult(accountId, date, 0, 0, true, null);
         }
     }
 
-    public static class UpstreamException extends RuntimeException {
-        public UpstreamException(String message) {
-            super(message);
-        }
-    }
-
-    public static class InvalidDataException extends RuntimeException {
-        public InvalidDataException(String message, Throwable cause) {
-            super(message, cause);
+    public record ClientEodResult(Integer clientId, LocalDate businessDate, int successCount, int failCount,
+                                  long durationMs, List<EodResult> accountResults) {
+        public boolean allSuccessful() {
+            return failCount == 0;
         }
     }
 }

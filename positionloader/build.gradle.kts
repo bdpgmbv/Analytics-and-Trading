@@ -1,144 +1,217 @@
+/*
+ * Position Loader - Build Configuration
+ * 12/10/2025 - Complete with all performance and testing dependencies
+ * Author: Vyshali Prabananth Lal
+ */
+
 plugins {
     java
-    id("org.springframework.boot")
-    id("io.spring.dependency-management")
-    jacoco  // Code coverage
+    id("org.springframework.boot") version "3.2.0"
+    id("io.spring.dependency-management") version "1.1.4"
+    jacoco
 }
 
-group = "com.vyshali.positionloader"
-version = "1.0.0"
+group = "com.vyshali"
+version = "2.0.0"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+configurations {
+    compileOnly {
+        extendsFrom(configurations.annotationProcessor.get())
+    }
+}
+
+repositories {
+    mavenCentral()
 }
 
 dependencies {
-    implementation(project(":common"))
-
-    // ==================== CORE SPRING ====================
+    // ==================== SPRING BOOT STARTERS ====================
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
-    implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
+    implementation("org.springframework.boot:spring-boot-starter-aop")
 
-    // ==================== CACHING (NEW) ====================
-    // Caffeine: High-performance local cache
-    // - 10x faster than Redis for local lookups
-    // - Perfect for reference data (Clients, Funds, Products)
+    // ==================== CACHING ====================
     implementation("org.springframework.boot:spring-boot-starter-cache")
-    implementation("com.github.ben-manes.caffeine:caffeine")
+    implementation("com.github.ben-manes.caffeine:caffeine:3.1.8")
 
-    // ==================== SECURITY ====================
-    implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
+    // ==================== REDIS ====================
+    implementation("org.springframework.boot:spring-boot-starter-data-redis")
 
     // ==================== KAFKA ====================
     implementation("org.springframework.kafka:spring-kafka")
 
-    // ==================== DATABASE ====================
-    runtimeOnly("org.postgresql:postgresql")
-    implementation("com.zaxxer:HikariCP")
+    // ==================== WEBFLUX (for async REST client) ====================
+    implementation("org.springframework.boot:spring-boot-starter-webflux")
 
-    // ==================== RESILIENCE ====================
-    implementation("io.github.resilience4j:resilience4j-spring-boot3:2.2.0")
+    // ==================== RESILIENCE4J ====================
+    implementation("io.github.resilience4j:resilience4j-spring-boot3:2.1.0")
+    implementation("io.github.resilience4j:resilience4j-circuitbreaker:2.1.0")
+    implementation("io.github.resilience4j:resilience4j-retry:2.1.0")
+    implementation("io.github.resilience4j:resilience4j-bulkhead:2.1.0")
 
-    // ==================== OBSERVABILITY ====================
-    implementation("io.micrometer:micrometer-registry-prometheus")
-    // Distributed tracing (required for trace propagation)
+    // ==================== DISTRIBUTED TRACING ====================
     implementation("io.micrometer:micrometer-tracing-bridge-brave")
     implementation("io.zipkin.reporter2:zipkin-reporter-brave")
+    implementation("io.micrometer:micrometer-observation")
 
-    // ==================== API DOCUMENTATION ====================
-    // OpenAPI/Swagger
-    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0")
+    // ==================== METRICS ====================
+    implementation("io.micrometer:micrometer-registry-prometheus")
+
+    // ==================== DATABASE ====================
+    runtimeOnly("org.postgresql:postgresql")
 
     // ==================== LOMBOK ====================
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
 
-    // ==================== TESTING ====================
+    // ==================== JSON ====================
+    implementation("com.fasterxml.jackson.core:jackson-databind")
+    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
+
+    // ==================== API DOCS (Optional) ====================
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0")
+
+    // ==================== TEST DEPENDENCIES ====================
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.kafka:spring-kafka-test")
 
-    // Better assertions
-    testImplementation("org.assertj:assertj-core:3.25.3")
+    // Testcontainers
+    testImplementation("org.testcontainers:testcontainers:1.19.3")
+    testImplementation("org.testcontainers:junit-jupiter:1.19.3")
+    testImplementation("org.testcontainers:postgresql:1.19.3")
+    testImplementation("org.testcontainers:kafka:1.19.3")
 
-    // Testcontainers for real DB/Kafka testing
-    testImplementation("org.testcontainers:testcontainers:1.19.7")
-    testImplementation("org.testcontainers:junit-jupiter:1.19.7")
-    testImplementation("org.testcontainers:postgresql:1.19.7")
-    testImplementation("org.testcontainers:kafka:1.19.7")
-
-    // Contract testing
-    testImplementation("au.com.dius.pact.consumer:junit5:4.6.7")
-
-    // Architecture testing
-    testImplementation("com.tngtech.archunit:archunit-junit5:1.2.1")
-
-    // Awaitility for async testing
+    // Async testing
     testImplementation("org.awaitility:awaitility:4.2.0")
+
+    // AssertJ
+    testImplementation("org.assertj:assertj-core:3.24.2")
+
+    // Mockito
+    testImplementation("org.mockito:mockito-core:5.8.0")
+    testImplementation("org.mockito:mockito-junit-jupiter:5.8.0")
 }
 
-// ==================== JACOCO COVERAGE ====================
+tasks.withType<Test> {
+    useJUnitPlatform()
+
+    // Enable parallel test execution
+    systemProperty("junit.jupiter.execution.parallel.enabled", "true")
+    systemProperty("junit.jupiter.execution.parallel.mode.default", "concurrent")
+
+    // Increase heap for integration tests
+    maxHeapSize = "1g"
+
+    // Test logging
+    testLogging {
+        events("passed", "skipped", "failed")
+        showStandardStreams = true
+    }
+}
+
+// ==================== JACOCO CODE COVERAGE ====================
 jacoco {
     toolVersion = "0.8.11"
 }
 
-tasks.test {
-    useJUnitPlatform()
-    finalizedBy(tasks.jacocoTestReport)
-}
-
 tasks.jacocoTestReport {
     dependsOn(tasks.test)
+
     reports {
         xml.required.set(true)
         html.required.set(true)
+        csv.required.set(false)
     }
+
+    // Exclude generated code and configs
+    classDirectories.setFrom(
+        files(classDirectories.files.map {
+            fileTree(it) {
+                exclude(
+                    "**/config/**",
+                    "**/dto/**",
+                    "**/exception/**",
+                    "**/*Application*"
+                )
+            }
+        })
+    )
 }
 
 tasks.jacocoTestCoverageVerification {
     violationRules {
         rule {
             limit {
-                // PRODUCTION: Require 80% line coverage
-                minimum = "0.80".toBigDecimal()
+                minimum = "0.80".toBigDecimal() // 80% coverage target
             }
         }
+
         rule {
             element = "CLASS"
-            excludes = listOf(
-                "*.dto.*", "*.config.*", "*Application"
-            )
+            includes = listOf("com.vyshali.positionloader.service.*")
+
             limit {
                 counter = "LINE"
                 value = "COVEREDRATIO"
-                minimum = "0.70".toBigDecimal()
+                minimum = "0.85".toBigDecimal() // 85% for services
             }
         }
     }
 }
 
-// ==================== INTEGRATION TESTS ====================
-sourceSets {
-    create("integrationTest") {
-        compileClasspath += sourceSets.main.get().output
-        runtimeClasspath += sourceSets.main.get().output
+// Run coverage check after tests
+tasks.check {
+    dependsOn(tasks.jacocoTestCoverageVerification)
+}
+
+// ==================== CUSTOM TASKS ====================
+
+// Integration test task (runs only *IntegrationTest classes)
+tasks.register<Test>("integrationTest") {
+    description = "Runs integration tests with Testcontainers"
+    group = "verification"
+
+    useJUnitPlatform {
+        includeTags("integration")
+    }
+
+    // Needs Docker
+    systemProperty("testcontainers.reuse.enable", "true")
+
+    shouldRunAfter(tasks.test)
+}
+
+// Unit test task (excludes integration tests)
+tasks.register<Test>("unitTest") {
+    description = "Runs unit tests only (no Testcontainers)"
+    group = "verification"
+
+    useJUnitPlatform {
+        excludeTags("integration")
     }
 }
 
-val integrationTestImplementation by configurations.getting {
-    extendsFrom(configurations.testImplementation.get())
+// ==================== BOOT JAR CONFIGURATION ====================
+tasks.bootJar {
+    archiveFileName.set("positionloader.jar")
+
+    manifest {
+        attributes(
+            "Implementation-Title" to "Position Loader",
+            "Implementation-Version" to version,
+            "Built-By" to "Vyshali Prabananth Lal"
+        )
+    }
 }
 
-tasks.register<Test>("integrationTest") {
-    description = "Runs integration tests."
-    group = "verification"
-    testClassesDirs = sourceSets["integrationTest"].output.classesDirs
-    classpath = sourceSets["integrationTest"].runtimeClasspath
-    shouldRunAfter(tasks.test)
-    useJUnitPlatform()
-}
-
-tasks.check {
-    dependsOn(tasks.named("integrationTest"))
+// ==================== SPRING BOOT CONFIGURATION ====================
+springBoot {
+    buildInfo()
 }
