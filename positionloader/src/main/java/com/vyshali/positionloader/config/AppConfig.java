@@ -4,6 +4,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.cache.caffeine.CaffeineCacheManager;
@@ -19,15 +20,13 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.client.RestClient;
 
-import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
  * Single consolidated configuration class.
- * Replaces: AppConfig, CacheConfig, KafkaConfig, KafkaDlqConfig, SecurityConfig,
- * TracingConfig, WebClientConfig, OpenApiConfig, GracefulShutdownConfig
+ * Phase 1 Enhancement #5: Added LoaderConfig for externalized configuration.
  */
 @Configuration
 @EnableCaching
@@ -40,6 +39,56 @@ public class AppConfig {
     public static final String TOPIC_EOD_TRIGGER = "MSPM_EOD_TRIGGER";
     public static final String TOPIC_INTRADAY = "MSPA_INTRADAY";
     public static final String TOPIC_POSITION_CHANGES = "POSITION_CHANGE_EVENTS";
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXTERNALIZED CONFIGURATION (Phase 1 - Enhancement #5)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * All tunable loader parameters in one place.
+     * Override via application.yml or environment variables.
+     *
+     * Examples:
+     *   LOADER_PARALLEL_THREADS=16     → More parallel EOD processing
+     *   LOADER_BATCH_SIZE=1000         → Larger DB batch inserts
+     *   LOADER_MAX_UPLOAD_SIZE=20000   → Allow bigger uploads
+     */
+    @ConfigurationProperties(prefix = "loader")
+    public record LoaderConfig(
+            int parallelThreads,
+            int batchSize,
+            int maxUploadSize,
+            int dlqMaxRetries,
+            long dlqRetryIntervalMs,
+            ValidationConfig validation
+    ) {
+        public LoaderConfig {
+            // Sensible defaults if not specified
+            if (parallelThreads <= 0) parallelThreads = 8;
+            if (batchSize <= 0) batchSize = 500;
+            if (maxUploadSize <= 0) maxUploadSize = 10000;
+            if (dlqMaxRetries <= 0) dlqMaxRetries = 3;
+            if (dlqRetryIntervalMs <= 0) dlqRetryIntervalMs = 300000;
+            if (validation == null) validation = new ValidationConfig(true, true, 1000000);
+        }
+
+        public record ValidationConfig(
+                boolean enabled,
+                boolean rejectZeroQuantity,
+                long maxPriceThreshold
+        ) {
+            public ValidationConfig {
+                if (maxPriceThreshold <= 0) maxPriceThreshold = 1000000;
+            }
+        }
+    }
+
+    @Bean
+    @ConfigurationProperties(prefix = "loader")
+    public LoaderConfig loaderConfig() {
+        return new LoaderConfig(8, 500, 10000, 3, 300000,
+                new LoaderConfig.ValidationConfig(true, true, 1000000));
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // REST CLIENT (for MSPM)

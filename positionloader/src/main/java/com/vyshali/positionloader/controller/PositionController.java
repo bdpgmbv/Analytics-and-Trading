@@ -1,10 +1,5 @@
 package com.vyshali.positionloader.controller;
 
-/*
- * 12/11/2025 - 11:48 AM
- * @author Vyshali Prabananth Lal
- */
-
 import com.vyshali.positionloader.dto.Dto;
 import com.vyshali.positionloader.repository.DataRepository;
 import com.vyshali.positionloader.service.PositionService;
@@ -12,24 +7,22 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Single controller for all Position Loader endpoints.
- * Replaces: EodController, UploadController, OpsController
+ * REST API for Position Loader operations.
+ *
+ * Phase 2 Addition: /api/v1/ops/rollback endpoint
  */
 @Slf4j
 @RestController
-@RequestMapping("/api/v1")
 @RequiredArgsConstructor
-@Tag(name = "Position Loader", description = "EOD and Intraday position operations")
+@Tag(name = "Position Loader", description = "EOD and position management")
 public class PositionController {
 
     private final PositionService service;
@@ -39,32 +32,33 @@ public class PositionController {
     // EOD OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @PostMapping("/eod/trigger/{accountId}")
-    @Operation(summary = "Trigger EOD for an account")
-    public ResponseEntity<Map<String, Object>> triggerEod(@PathVariable Integer accountId, @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-
-        LocalDate businessDate = date != null ? date : LocalDate.now();
-        log.info("EOD trigger: account={}, date={}", accountId, businessDate);
-
-        try {
-            service.processEod(accountId);
-            return ResponseEntity.ok(Map.of("status", "SUCCESS", "accountId", accountId, "businessDate", businessDate));
-        } catch (Exception e) {
-            return ResponseEntity.internalServerError().body(Map.of("status", "FAILED", "accountId", accountId, "error", e.getMessage()));
-        }
+    @Operation(summary = "Trigger EOD processing for an account")
+    @PostMapping("/api/v1/eod/{accountId}")
+    public ResponseEntity<Map<String, Object>> triggerEod(@PathVariable Integer accountId) {
+        log.info("Manual EOD trigger for account {}", accountId);
+        service.processEod(accountId);
+        return ResponseEntity.ok(Map.of(
+                "status", "completed",
+                "accountId", accountId,
+                "businessDate", LocalDate.now()
+        ));
     }
 
-    @GetMapping("/eod/status/{accountId}")
-    @Operation(summary = "Get EOD status")
-    public ResponseEntity<Dto.EodStatus> getEodStatus(@PathVariable Integer accountId, @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-
-        Dto.EodStatus status = repo.getEodStatus(accountId, date != null ? date : LocalDate.now());
+    @Operation(summary = "Get EOD status for an account")
+    @GetMapping("/api/v1/eod/{accountId}/status")
+    public ResponseEntity<Dto.EodStatus> getEodStatus(
+            @PathVariable Integer accountId,
+            @RequestParam(required = false) LocalDate date) {
+        LocalDate businessDate = date != null ? date : LocalDate.now();
+        Dto.EodStatus status = repo.getEodStatus(accountId, businessDate);
         return status != null ? ResponseEntity.ok(status) : ResponseEntity.notFound().build();
     }
 
-    @GetMapping("/eod/history/{accountId}")
-    @Operation(summary = "Get EOD history")
-    public ResponseEntity<List<Dto.EodStatus>> getEodHistory(@PathVariable Integer accountId, @RequestParam(defaultValue = "30") int days) {
+    @Operation(summary = "Get EOD history for an account")
+    @GetMapping("/api/v1/eod/{accountId}/history")
+    public ResponseEntity<List<Dto.EodStatus>> getEodHistory(
+            @PathVariable Integer accountId,
+            @RequestParam(defaultValue = "7") int days) {
         return ResponseEntity.ok(repo.getEodHistory(accountId, days));
     }
 
@@ -72,49 +66,87 @@ public class PositionController {
     // POSITION QUERIES
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @GetMapping("/positions/{accountId}")
-    @Operation(summary = "Get positions for account")
-    public ResponseEntity<List<Dto.Position>> getPositions(@PathVariable Integer accountId, @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return ResponseEntity.ok(repo.getPositionsByDate(accountId, date != null ? date : LocalDate.now()));
+    @Operation(summary = "Get positions for an account on a date")
+    @GetMapping("/api/v1/accounts/{accountId}/positions")
+    public ResponseEntity<List<Dto.Position>> getPositions(
+            @PathVariable Integer accountId,
+            @RequestParam(required = false) LocalDate date) {
+        LocalDate businessDate = date != null ? date : LocalDate.now();
+        return ResponseEntity.ok(repo.getPositionsByDate(accountId, businessDate));
     }
 
-    @GetMapping("/positions/{accountId}/{productId}/as-of")
-    @Operation(summary = "Get position quantity as of date")
-    public ResponseEntity<BigDecimal> getPositionAsOf(@PathVariable Integer accountId, @PathVariable Integer productId, @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return ResponseEntity.ok(repo.getQuantityAsOf(accountId, productId, date));
+    @Operation(summary = "Get ACTIVE batch positions only (Phase 2)")
+    @GetMapping("/api/v1/accounts/{accountId}/positions/active")
+    public ResponseEntity<List<Dto.Position>> getActivePositions(
+            @PathVariable Integer accountId,
+            @RequestParam(required = false) LocalDate date) {
+        LocalDate businessDate = date != null ? date : LocalDate.now();
+        return ResponseEntity.ok(repo.getActivePositions(accountId, businessDate));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // UPLOAD
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @PostMapping("/positions/upload/{accountId}")
-    @Operation(summary = "Upload positions")
-    public ResponseEntity<Map<String, Object>> uploadPositions(@PathVariable Integer accountId, @RequestBody List<Dto.Position> positions) {
+    @Operation(summary = "Upload positions manually")
+    @PostMapping("/api/v1/accounts/{accountId}/positions")
+    public ResponseEntity<Map<String, Object>> uploadPositions(
+            @PathVariable Integer accountId,
+            @RequestBody List<Dto.Position> positions) {
+        int count = service.processUpload(accountId, positions);
+        return ResponseEntity.ok(Map.of(
+                "status", "uploaded",
+                "accountId", accountId,
+                "count", count
+        ));
+    }
 
-        if (positions.size() > 10000) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Max 10,000 positions per upload"));
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PHASE 2: OPS OPERATIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Operation(summary = "Rollback EOD to previous batch (Phase 2)")
+    @PostMapping("/api/v1/ops/rollback/{accountId}")
+    public ResponseEntity<Map<String, Object>> rollbackEod(
+            @PathVariable Integer accountId,
+            @RequestParam(required = false) LocalDate date) {
+        LocalDate businessDate = date != null ? date : LocalDate.now();
+        log.warn("OPS: Rollback requested for account {} on {}", accountId, businessDate);
+
+        boolean success = service.rollbackEod(accountId, businessDate);
+
+        if (success) {
+            return ResponseEntity.ok(Map.of(
+                    "status", "rolled_back",
+                    "accountId", accountId,
+                    "businessDate", businessDate
+            ));
+        } else {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "failed",
+                    "accountId", accountId,
+                    "message", "No previous batch available to rollback to"
+            ));
         }
-
-        int processed = service.processUpload(accountId, positions);
-
-        return ResponseEntity.ok(Map.of("accountId", accountId, "received", positions.size(), "processed", processed));
     }
 
-    @PostMapping("/intraday")
-    @Operation(summary = "Process intraday update")
-    public ResponseEntity<Map<String, String>> processIntraday(@RequestBody Dto.AccountSnapshot snapshot) {
-        service.processIntraday(snapshot);
-        return ResponseEntity.ok(Map.of("status", "SUCCESS"));
+    @Operation(summary = "Get DLQ status")
+    @GetMapping("/api/v1/ops/dlq")
+    public ResponseEntity<Map<String, Object>> getDlqStatus() {
+        int depth = repo.getDlqDepth();
+        List<Map<String, Object>> messages = repo.getDlqMessages(20);
+        return ResponseEntity.ok(Map.of(
+                "depth", depth,
+                "sample", messages
+        ));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // HEALTH
+    // HEALTH (simple)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @GetMapping("/health")
-    @Operation(summary = "Health check")
-    public ResponseEntity<Map<String, String>> health() {
-        return ResponseEntity.ok(Map.of("status", "UP", "service", "positionloader"));
+    @GetMapping("/ping")
+    public ResponseEntity<String> ping() {
+        return ResponseEntity.ok("pong");
     }
 }

@@ -478,3 +478,54 @@ CREATE TABLE Hedge_Valuations (
 );
 
 CREATE INDEX idx_hedge_val_date ON Hedge_Valuations(business_date);
+
+-- Phase 2 Enhancement #6: Batch Switching
+-- Add this table to your schema (fxanalyzer-complete-schema.sql)
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ACCOUNT BATCHES - Tracks batch lifecycle for blue/green deployment
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS Account_Batches (
+    id                  SERIAL PRIMARY KEY,
+    account_id          INTEGER NOT NULL,
+    batch_id            INTEGER NOT NULL,
+    business_date       DATE NOT NULL,
+    status              VARCHAR(20) NOT NULL DEFAULT 'STAGING',  -- STAGING, ACTIVE, ARCHIVED, FAILED, ROLLED_BACK
+    position_count      INTEGER,
+    error_message       TEXT,
+    created_at          TIMESTAMP DEFAULT NOW(),
+    activated_at        TIMESTAMP,
+    archived_at         TIMESTAMP,
+
+    CONSTRAINT uq_account_batch UNIQUE (account_id, batch_id),
+    CONSTRAINT fk_account_batches_account FOREIGN KEY (account_id) REFERENCES Accounts(account_id)
+);
+
+-- Indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_account_batches_status ON Account_Batches(account_id, business_date, status);
+CREATE INDEX IF NOT EXISTS idx_account_batches_active ON Account_Batches(account_id, status) WHERE status = 'ACTIVE';
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- SYSTEM ALERTS - Optional: Store alerts locally for debugging
+-- (Main alerts go to Kafka SYSTEM_ALERTS topic)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS System_Alerts (
+    id                  SERIAL PRIMARY KEY,
+    level               VARCHAR(20) NOT NULL,  -- INFO, WARNING, CRITICAL, PAGE
+    source              VARCHAR(50) NOT NULL,  -- positionloader, hedgeservice, etc.
+    alert_type          VARCHAR(50) NOT NULL,
+    message             TEXT NOT NULL,
+    entity_id           VARCHAR(100),
+    acknowledged        BOOLEAN DEFAULT FALSE,
+    acknowledged_by     VARCHAR(100),
+    acknowledged_at     TIMESTAMP,
+    created_at          TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_unacked ON System_Alerts(level, acknowledged) WHERE acknowledged = FALSE;
+CREATE INDEX IF NOT EXISTS idx_alerts_source ON System_Alerts(source, created_at);
+
+COMMENT ON TABLE Account_Batches IS 'Phase 2: Batch tracking for blue/green position deployment';
+COMMENT ON TABLE System_Alerts IS 'Phase 2: Local alert storage for debugging (primary alerts go to Kafka)';

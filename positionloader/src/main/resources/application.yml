@@ -39,37 +39,112 @@ mspm:
   base-url: ${MSPM_URL:http://localhost:8080}
   timeout: 30
 
-# Resilience4j
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOADER CONFIGURATION (Phase 1 + Phase 2)
+# ═══════════════════════════════════════════════════════════════════════════════
+loader:
+  # EOD Processing
+  parallel-threads: ${EOD_THREADS:8}
+  batch-size: ${BATCH_SIZE:500}
+  max-upload-size: ${MAX_UPLOAD:10000}
+
+  # Dead Letter Queue
+  dlq-max-retries: ${DLQ_MAX_RETRIES:3}
+  dlq-retry-interval-ms: ${DLQ_INTERVAL:300000}
+
+  # Validation (Phase 1)
+  validation:
+    enabled: ${VALIDATION_ENABLED:true}
+    reject-zero-quantity: ${REJECT_ZERO_QTY:true}
+    max-price-threshold: ${MAX_PRICE:1000000}
+
+  # Phase 2: Rate Limiting
+  rate-limit:
+    max-concurrent: ${MAX_CONCURRENT:20}         # Max concurrent operations
+
+  # Phase 2: Alerting
+  alerting:
+    dlq-threshold: ${DLQ_ALERT_THRESHOLD:50}     # Alert when DLQ depth exceeds this
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESILIENCE4J - Phase 1 + Phase 2
+# ═══════════════════════════════════════════════════════════════════════════════
 resilience4j:
+  # Phase 1: Retry with exponential backoff
   retry:
     instances:
       mspm:
         max-attempts: 3
         wait-duration: 1s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        retry-exceptions:
+          - java.net.SocketTimeoutException
+          - java.net.ConnectException
+          - org.springframework.web.client.ResourceAccessException
+        ignore-exceptions:
+          - org.springframework.web.client.HttpClientErrorException$NotFound
+          - org.springframework.web.client.HttpClientErrorException$BadRequest
+
+  # Phase 2: Circuit Breakers
   circuitbreaker:
     instances:
+      # MSPM API circuit breaker
       mspm:
+        register-health-indicator: true
         sliding-window-size: 10
         failure-rate-threshold: 50
         wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
 
-# Actuator
+      # Database circuit breaker (Phase 2 Enhancement #7)
+      database:
+        register-health-indicator: true
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        slow-call-rate-threshold: 80
+        slow-call-duration-threshold: 2s
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ACTUATOR - Health & Metrics
+# ═══════════════════════════════════════════════════════════════════════════════
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: health,info,metrics,prometheus,circuitbreakers,circuitbreakerevents
   endpoint:
     health:
       show-details: when_authorized
       probes:
         enabled: true
+      group:
+        readiness:
+          include: readinessState,db,circuitBreakers
+        liveness:
+          include: livenessState,loaderHealth
+  health:
+    defaults:
+      enabled: true
+    circuitbreakers:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      environment: ${ENVIRONMENT:dev}
 
 # Logging
 logging:
   level:
     root: INFO
     com.vyshali: ${LOG_LEVEL:INFO}
+    # Resilience4j events
+    io.github.resilience4j: INFO
+    org.apache.kafka: WARN
+    org.springframework.kafka: WARN
   pattern:
     console: "%d{HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
 
@@ -81,25 +156,60 @@ springdoc:
     path: /api-docs
 
 ---
-# Dev profile
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEV PROFILE
+# ═══════════════════════════════════════════════════════════════════════════════
 spring:
   config:
     activate:
       on-profile: dev
+
+loader:
+  parallel-threads: 4
+  rate-limit:
+    max-concurrent: 10
+  validation:
+    enabled: true
+    reject-zero-quantity: false
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      mspm:
+        wait-duration-in-open-state: 10s
+      database:
+        wait-duration-in-open-state: 10s
+
 logging:
   level:
     com.vyshali: DEBUG
+    io.github.resilience4j: DEBUG
 
 ---
-# Prod profile  
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROD PROFILE
+# ═══════════════════════════════════════════════════════════════════════════════
 spring:
   config:
     activate:
       on-profile: prod
+
+loader:
+  parallel-threads: 16
+  batch-size: 1000
+  rate-limit:
+    max-concurrent: 40
+  alerting:
+    dlq-threshold: 100
+  validation:
+    enabled: true
+    reject-zero-quantity: true
+
 logging:
   level:
     root: WARN
     com.vyshali: INFO
+
 springdoc:
   swagger-ui:
     enabled: false
