@@ -3,45 +3,61 @@ spring:
     name: position-loader
   
   datasource:
-    url: jdbc:postgresql://localhost:5432/positionloader
-    username: postgres
-    password: postgres
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:positionloader}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASS:postgres}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
   
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
     consumer:
       auto-offset-reset: earliest
       group-id: position-loader
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        max.poll.records: 100
+        max.poll.interval.ms: 300000
 
   cache:
     type: caffeine
 
-# Position Loader Configuration
+  # Liquibase migration
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+
+# ═══════════════════════════════════════════════════════════════════════════
+# POSITION LOADER CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════
 loader:
-  batch-size: 1000
-  processing-threads: 4
+  batch-size: ${BATCH_SIZE:1000}
+  processing-threads: ${EOD_THREADS:4}
   dlq-retention-days: 7
-  dlq-max-retries: 3
-  dlq-retry-interval-ms: 300000
+  dlq-max-retries: ${DLQ_MAX_RETRIES:3}
+  dlq-retry-interval-ms: ${DLQ_INTERVAL:300000}
   
   rate-limit:
-    max-concurrent: 20
+    max-concurrent: ${MAX_CONCURRENT:20}
     requests-per-second: 100
   
   alerting:
-    dlq-threshold: 100
+    dlq-threshold: ${DLQ_ALERT_THRESHOLD:100}
     email-enabled: false
     email-recipients: null
   
   consumer-lag:
     check-interval-ms: 30000
-    alert-threshold: 10000
+    alert-threshold: ${LAG_ALERT_THRESHOLD:10000}
   
   mspm:
-    base-url: http://localhost:8081
+    base-url: ${MSPM_URL:http://localhost:8081}
     timeout: 30s
   
   retry:
@@ -51,51 +67,129 @@ loader:
     multiplier: 2.0
   
   feature-flags:
-    eod-processing-enabled: true
-    intraday-processing-enabled: true
-    validation-enabled: true
-    duplicate-detection-enabled: true
-    reconciliation-enabled: true
-    archival-enabled: true
-    disabled-accounts: []
-    pilot-accounts: []
+    eod-processing-enabled: ${EOD_ENABLED:true}
+    intraday-processing-enabled: ${INTRADAY_ENABLED:true}
+    validation-enabled: ${VALIDATION_ENABLED:true}
+    duplicate-detection-enabled: ${DUPLICATE_DETECTION:true}
+    reconciliation-enabled: ${RECONCILIATION_ENABLED:true}
+    archival-enabled: ${ARCHIVAL_ENABLED:true}
+    disabled-accounts: ${DISABLED_ACCOUNTS:}
+    pilot-accounts: ${PILOT_ACCOUNTS:}
   
   validation:
-    enabled: true
-    reject-zero-quantity: true
-    max-price-threshold: 1000000
+    enabled: ${VALIDATION_ENABLED:true}
+    reject-zero-quantity: ${REJECT_ZERO_QTY:true}
+    max-price-threshold: ${MAX_PRICE:1000000}
   
   archival:
-    enabled: true
-    retention-days: 180
-    cron-schedule: "0 0 2 * * SUN"
+    enabled: ${ARCHIVAL_ENABLED:true}
+    retention-days: ${RETENTION_DAYS:180}
+    cron-schedule: "${ARCHIVAL_CRON:0 0 2 * * SUN}"
   
   kafka:
     batch-size: 100
     poll-timeout-ms: 5000
+  
+  # Tracing configuration
+  tracing:
+    enabled: ${TRACING_ENABLED:false}
 
-# Actuator endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+# RESILIENCE4J CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════
+resilience4j:
+  circuitbreaker:
+    instances:
+      mspm-service:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        waitDurationInOpenState: 30s
+        failureRateThreshold: 50
+        slowCallDurationThreshold: 5s
+        slowCallRateThreshold: 80
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+      database:
+        registerHealthIndicator: true
+        slidingWindowSize: 20
+        minimumNumberOfCalls: 10
+        permittedNumberOfCallsInHalfOpenState: 5
+        waitDurationInOpenState: 60s
+        failureRateThreshold: 70
+  
+  retry:
+    instances:
+      mspm-service:
+        maxAttempts: 3
+        waitDuration: 1s
+        retryExceptions:
+          - java.io.IOException
+          - java.net.SocketTimeoutException
+          - org.springframework.web.client.ResourceAccessException
+      database:
+        maxAttempts: 3
+        waitDuration: 500ms
+        retryExceptions:
+          - org.springframework.dao.TransientDataAccessException
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ACTUATOR & METRICS
+# ═══════════════════════════════════════════════════════════════════════════
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: health,info,metrics,prometheus,circuitbreakers,retries
   endpoint:
     health:
       show-details: always
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,kafka
+  health:
+    circuitbreakers:
+      enabled: true
   metrics:
     export:
       prometheus:
         enabled: true
+    tags:
+      application: ${spring.application.name}
+  
+  # Tracing configuration (Phase 3)
+  tracing:
+    enabled: ${TRACING_ENABLED:false}
+    sampling:
+      probability: ${TRACING_SAMPLE_RATE:0.1}
+  
+  # OTLP exporter
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
 
-# Logging
+# ═══════════════════════════════════════════════════════════════════════════
+# LOGGING
+# ═══════════════════════════════════════════════════════════════════════════
 logging:
   level:
-    root: INFO
+    root: ${LOG_LEVEL:INFO}
     com.vyshali.positionloader: DEBUG
     org.springframework.kafka: WARN
     org.apache.kafka: WARN
+    io.github.resilience4j: INFO
 
-# Server
+# ═══════════════════════════════════════════════════════════════════════════
+# SERVER
+# ═══════════════════════════════════════════════════════════════════════════
 server:
   port: 8080
+  shutdown: graceful
+
+# Graceful shutdown
+spring.lifecycle:
+  timeout-per-shutdown-phase: 30s

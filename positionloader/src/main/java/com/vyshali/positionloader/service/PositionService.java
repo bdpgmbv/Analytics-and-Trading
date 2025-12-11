@@ -1,5 +1,10 @@
 package com.vyshali.positionloader.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vyshali.positionloader.config.AppConfig;
+import com.vyshali.positionloader.config.LoaderConfig;
 import com.vyshali.positionloader.dto.Dto;
 import com.vyshali.positionloader.dto.EodRequest;
 import com.vyshali.positionloader.dto.PositionDto;
@@ -28,17 +33,23 @@ public class PositionService {
     private final DataRepository dataRepository;
     private final EodProcessingService eodProcessingService;
     private final PositionValidationService validationService;
+    private final LoaderConfig config;
     private final MeterRegistry meterRegistry;
+    private final ObjectMapper objectMapper;
     
     public PositionService(
             DataRepository dataRepository,
             EodProcessingService eodProcessingService,
             PositionValidationService validationService,
+            LoaderConfig config,
             MeterRegistry meterRegistry) {
         this.dataRepository = dataRepository;
         this.eodProcessingService = eodProcessingService;
         this.validationService = validationService;
+        this.config = config;
         this.meterRegistry = meterRegistry;
+        this.objectMapper = new ObjectMapper();
+        this.objectMapper.findAndRegisterModules(); // For Java 8 date/time support
     }
     
     /**
@@ -71,7 +82,6 @@ public class PositionService {
     @Transactional
     public void processEod(int accountId, LocalDate businessDate) {
         log.info("Processing EOD for account {} date {}", accountId, businessDate);
-        EodRequest request = EodRequest.of(accountId, businessDate);
         eodProcessingService.processEod(accountId, businessDate);
     }
     
@@ -109,13 +119,317 @@ public class PositionService {
     }
     
     /**
-     * Process intraday JSON message.
+     * Process intraday JSON message from Kafka.
+     * 
+     * Expected JSON formats:
+     * 
+     * Single position update:
+     * {
+     *   "accountId": 1001,
+     *   "productId": 1,
+     *   "quantity": 100.5,
+     *   "price": 150.25,
+     *   "currency": "USD"
+     * }
+     * 
+     * Batch position update:
+     * {
+     *   "accountId": 1001,
+     *   "positions": [
+     *     {"productId": 1, "quantity": 100.5, "price": 150.25},
+     *     {"productId": 2, "quantity": 200.0, "price": 75.50}
+     *   ]
+     * }
+     * 
+     * Trade fill event:
+     * {
+     *   "type": "TRADE_FILL",
+     *   "accountId": 1001,
+     *   "productId": 1,
+     *   "fillQuantity": 50.0,
+     *   "fillPrice": 151.00,
+     *   "side": "BUY"
+     * }
      */
     @Transactional
     public void processIntradayJson(String json) {
         log.debug("Processing intraday JSON: {}", json);
-        // Implementation depends on JSON format
-        // This would typically parse the JSON and update positions
+        
+        if (json == null || json.isBlank()) {
+            log.warn("Received empty intraday message, skipping");
+            meterRegistry.counter("posloader.intraday.skipped", "reason", "empty").increment();
+            return;
+        }
+        
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            
+            // Check if intraday processing is enabled
+            if (!config.features().intradayProcessingEnabled()) {
+                log.debug("Intraday processing disabled, skipping message");
+                meterRegistry.counter("posloader.intraday.skipped", "reason", "disabled").increment();
+                return;
+            }
+            
+            // Determine message type and process accordingly
+            String messageType = root.has("type") ? root.get("type").asText() : "POSITION_UPDATE";
+            
+            switch (messageType) {
+                case "TRADE_FILL" -> processTradeFill(root);
+                case "POSITION_UPDATE" -> processPositionUpdate(root);
+                case "POSITION_BATCH" -> processPositionBatch(root);
+                default -> {
+                    // Default: treat as position update
+                    if (root.has("positions")) {
+                        processPositionBatch(root);
+                    } else {
+                        processPositionUpdate(root);
+                    }
+                }
+            }
+            
+            meterRegistry.counter("posloader.intraday.processed", "type", messageType).increment();
+            
+        } catch (JsonProcessingException e) {
+            log.error("Failed to parse intraday JSON: {}", e.getMessage());
+            meterRegistry.counter("posloader.intraday.failed", "reason", "parse_error").increment();
+            throw new RuntimeException("Invalid intraday JSON format", e);
+        } catch (Exception e) {
+            log.error("Failed to process intraday update: {}", e.getMessage(), e);
+            meterRegistry.counter("posloader.intraday.failed", "reason", "processing_error").increment();
+            throw new RuntimeException("Intraday processing failed", e);
+        }
+    }
+    
+    /**
+     * Process a single position update from JSON.
+     */
+    private void processPositionUpdate(JsonNode node) {
+        int accountId = node.get("accountId").asInt();
+        int productId = node.get("productId").asInt();
+        BigDecimal quantity = getBigDecimal(node, "quantity", BigDecimal.ZERO);
+        BigDecimal price = getBigDecimal(node, "price", BigDecimal.ZERO);
+        String currency = node.has("currency") ? node.get("currency").asText() : "USD";
+        LocalDate businessDate = LocalDate.now();
+        
+        log.info("Processing intraday position update: account={}, product={}, qty={}", 
+            accountId, productId, quantity);
+        
+        // Validate account
+        if (!config.features().shouldProcessAccount(accountId)) {
+            log.debug("Account {} not eligible for processing, skipping", accountId);
+            return;
+        }
+        
+        if (!dataRepository.isAccountActive(accountId)) {
+            log.warn("Account {} not active, skipping intraday update", accountId);
+            meterRegistry.counter("posloader.intraday.skipped", "reason", "inactive_account").increment();
+            return;
+        }
+        
+        // Validate product
+        if (!dataRepository.isProductValid(productId)) {
+            log.warn("Product {} not valid, skipping intraday update", productId);
+            meterRegistry.counter("posloader.intraday.skipped", "reason", "invalid_product").increment();
+            return;
+        }
+        
+        // Create position
+        BigDecimal marketValue = quantity.multiply(price);
+        PositionDto position = new PositionDto(
+            null,
+            accountId,
+            productId,
+            businessDate,
+            quantity,
+            price,
+            currency,
+            marketValue,
+            marketValue,
+            price,
+            marketValue,
+            0,
+            AppConfig.SOURCE_INTRADAY,
+            "PHYSICAL",
+            false
+        );
+        
+        // Validate position
+        if (config.features().validationEnabled()) {
+            var validationResult = validationService.validate(position);
+            if (!validationResult.isValid()) {
+                log.warn("Intraday position validation failed: {}", validationResult.errors());
+                meterRegistry.counter("posloader.intraday.validation_failed").increment();
+                throw new IllegalArgumentException("Validation failed: " + validationResult.errors());
+            }
+        }
+        
+        // Save position (creates new batch for intraday)
+        int batchId = dataRepository.createBatch(accountId, businessDate, AppConfig.SOURCE_INTRADAY);
+        dataRepository.savePositions(List.of(position), batchId);
+        dataRepository.completeBatch(batchId, 1);
+        
+        dataRepository.logAudit("INTRADAY_UPDATE", accountId, businessDate,
+            String.format("Intraday update: product=%d, qty=%s", productId, quantity));
+        
+        log.info("Intraday position saved: account={}, product={}, batch={}", 
+            accountId, productId, batchId);
+    }
+    
+    /**
+     * Process a batch of position updates from JSON.
+     */
+    private void processPositionBatch(JsonNode node) {
+        int accountId = node.get("accountId").asInt();
+        JsonNode positionsNode = node.get("positions");
+        
+        if (positionsNode == null || !positionsNode.isArray()) {
+            log.warn("No positions array in batch message for account {}", accountId);
+            return;
+        }
+        
+        log.info("Processing intraday batch: account={}, count={}", 
+            accountId, positionsNode.size());
+        
+        // Validate account
+        if (!config.features().shouldProcessAccount(accountId)) {
+            log.debug("Account {} not eligible for processing, skipping batch", accountId);
+            return;
+        }
+        
+        LocalDate businessDate = LocalDate.now();
+        List<PositionDto> positions = new java.util.ArrayList<>();
+        
+        for (JsonNode posNode : positionsNode) {
+            int productId = posNode.get("productId").asInt();
+            BigDecimal quantity = getBigDecimal(posNode, "quantity", BigDecimal.ZERO);
+            BigDecimal price = getBigDecimal(posNode, "price", BigDecimal.ZERO);
+            String currency = posNode.has("currency") ? posNode.get("currency").asText() : "USD";
+            
+            BigDecimal marketValue = quantity.multiply(price);
+            PositionDto position = new PositionDto(
+                null,
+                accountId,
+                productId,
+                businessDate,
+                quantity,
+                price,
+                currency,
+                marketValue,
+                marketValue,
+                price,
+                marketValue,
+                0,
+                AppConfig.SOURCE_INTRADAY,
+                "PHYSICAL",
+                false
+            );
+            positions.add(position);
+        }
+        
+        // Validate batch
+        if (config.features().validationEnabled()) {
+            var validationResult = validationService.validate(positions);
+            if (!validationResult.isValid()) {
+                log.warn("Intraday batch validation failed: {}", validationResult.errors());
+                meterRegistry.counter("posloader.intraday.validation_failed").increment();
+                throw new IllegalArgumentException("Batch validation failed: " + validationResult.errors());
+            }
+        }
+        
+        // Save batch
+        int batchId = dataRepository.createBatch(accountId, businessDate, AppConfig.SOURCE_INTRADAY);
+        int saved = dataRepository.savePositions(positions, batchId);
+        dataRepository.completeBatch(batchId, saved);
+        
+        dataRepository.logAudit("INTRADAY_BATCH", accountId, businessDate,
+            String.format("Intraday batch: %d positions saved", saved));
+        
+        log.info("Intraday batch saved: account={}, positions={}, batch={}", 
+            accountId, saved, batchId);
+    }
+    
+    /**
+     * Process a trade fill event - adjusts existing position.
+     */
+    private void processTradeFill(JsonNode node) {
+        int accountId = node.get("accountId").asInt();
+        int productId = node.get("productId").asInt();
+        BigDecimal fillQuantity = getBigDecimal(node, "fillQuantity", BigDecimal.ZERO);
+        BigDecimal fillPrice = getBigDecimal(node, "fillPrice", BigDecimal.ZERO);
+        String side = node.has("side") ? node.get("side").asText() : "BUY";
+        
+        log.info("Processing trade fill: account={}, product={}, qty={}, side={}", 
+            accountId, productId, fillQuantity, side);
+        
+        // Validate account
+        if (!config.features().shouldProcessAccount(accountId)) {
+            log.debug("Account {} not eligible for processing, skipping trade fill", accountId);
+            return;
+        }
+        
+        // Adjust quantity based on side
+        BigDecimal adjustedQuantity = "SELL".equalsIgnoreCase(side) 
+            ? fillQuantity.negate() 
+            : fillQuantity;
+        
+        LocalDate businessDate = LocalDate.now();
+        
+        // Get current position
+        List<PositionDto> existingPositions = dataRepository.findPositions(accountId, businessDate);
+        PositionDto existing = existingPositions.stream()
+            .filter(p -> p.productId() == productId)
+            .findFirst()
+            .orElse(null);
+        
+        BigDecimal newQuantity;
+        if (existing != null) {
+            newQuantity = existing.quantity().add(adjustedQuantity);
+        } else {
+            newQuantity = adjustedQuantity;
+        }
+        
+        // Create updated position
+        BigDecimal marketValue = newQuantity.multiply(fillPrice);
+        PositionDto position = new PositionDto(
+            null,
+            accountId,
+            productId,
+            businessDate,
+            newQuantity,
+            fillPrice,
+            "USD",
+            marketValue,
+            marketValue,
+            fillPrice,
+            marketValue,
+            0,
+            AppConfig.SOURCE_INTRADAY,
+            "PHYSICAL",
+            false
+        );
+        
+        // Save position
+        int batchId = dataRepository.createBatch(accountId, businessDate, AppConfig.SOURCE_INTRADAY);
+        dataRepository.savePositions(List.of(position), batchId);
+        dataRepository.completeBatch(batchId, 1);
+        
+        dataRepository.logAudit("TRADE_FILL", accountId, businessDate,
+            String.format("Trade fill: product=%d, side=%s, qty=%s, price=%s", 
+                productId, side, fillQuantity, fillPrice));
+        
+        log.info("Trade fill processed: account={}, product={}, newQty={}", 
+            accountId, productId, newQuantity);
+    }
+    
+    /**
+     * Helper to safely extract BigDecimal from JSON.
+     */
+    private BigDecimal getBigDecimal(JsonNode node, String field, BigDecimal defaultValue) {
+        if (node.has(field) && !node.get(field).isNull()) {
+            return new BigDecimal(node.get(field).asText());
+        }
+        return defaultValue;
     }
     
     /**
@@ -140,7 +454,7 @@ public class PositionService {
                 BigDecimal.ZERO, // avgCostPrice
                 BigDecimal.ZERO, // costLocal
                 0, // batchId - will be set
-                p.source() != null ? p.source() : "UPLOAD",
+                p.source() != null ? p.source() : AppConfig.SOURCE_UPLOAD,
                 p.positionType() != null ? p.positionType() : "PHYSICAL",
                 false // isExcluded
             ))
@@ -156,9 +470,12 @@ public class PositionService {
             positions.get(0).businessDate();
         
         // Create batch and save
-        int batchId = dataRepository.createBatch(accountId, businessDate, "UPLOAD");
+        int batchId = dataRepository.createBatch(accountId, businessDate, AppConfig.SOURCE_UPLOAD);
         int saved = dataRepository.savePositions(positionDtos, batchId);
         dataRepository.completeBatch(batchId, saved);
+        
+        dataRepository.logAudit("POSITIONS_UPLOADED", accountId, businessDate,
+            String.format("Uploaded %d positions", saved));
         
         return saved;
     }
@@ -181,10 +498,10 @@ public class PositionService {
         // Create adjustment position
         PositionDto adjustment = PositionDto.of(accountId, productId, businessDate, 
             quantity, price != null ? price : BigDecimal.ZERO, "USD")
-            .withSource("ADJUSTMENT");
+            .withSource(AppConfig.SOURCE_ADJUSTMENT);
         
         // Save adjustment
-        int batchId = dataRepository.createBatch(accountId, businessDate, "ADJUSTMENT");
+        int batchId = dataRepository.createBatch(accountId, businessDate, AppConfig.SOURCE_ADJUSTMENT);
         dataRepository.savePositions(List.of(adjustment), batchId);
         dataRepository.completeBatch(batchId, 1);
     }
@@ -196,7 +513,7 @@ public class PositionService {
     public void resetEodStatus(int accountId, LocalDate businessDate, String actor) {
         log.warn("Resetting EOD status for account {} date {} by {}", accountId, businessDate, actor);
         
-        dataRepository.updateEodStatus(accountId, businessDate, "PENDING");
+        dataRepository.updateEodStatus(accountId, businessDate, AppConfig.EOD_STATUS_PENDING);
         dataRepository.logAudit("EOD_STATUS_RESET", accountId, businessDate,
             String.format("EOD status reset by %s", actor));
     }

@@ -39,3 +39,10 @@ databaseChangeLog:
   - include:
       file: changes/009-seed-data.sql
       relativeToChangelogFile: true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Position Loader Compatibility Fixes
+  # ═══════════════════════════════════════════════════════════════════════════
+  - include:
+      file: changes/010-positionloader-fixes.sql
+      relativeToChangelogFile: true
