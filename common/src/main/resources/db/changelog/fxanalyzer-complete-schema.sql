@@ -467,3 +467,14 @@ ON CONFLICT (internal_id) DO NOTHING;
 INSERT INTO Account_Batches (account_id, batch_id, status)
 VALUES (1001, 1, 'ACTIVE')
 ON CONFLICT (account_id, batch_id) DO NOTHING;
+
+CREATE TABLE Hedge_Valuations (
+    account_id      INT NOT NULL,
+    business_date   DATE NOT NULL,
+    valuation       DECIMAL(18,2) NOT NULL DEFAULT 0,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP,
+    PRIMARY KEY (account_id, business_date)
+);
+
+CREATE INDEX idx_hedge_val_date ON Hedge_Valuations(business_date);

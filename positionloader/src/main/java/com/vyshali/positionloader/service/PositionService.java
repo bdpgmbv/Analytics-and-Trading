@@ -74,11 +74,6 @@ public class PositionService {
             repo.recordEodComplete(accountId, today, count);
             repo.markAccountComplete(accountId, snapshot.clientId(), today);
 
-            // Calculate and save hedge valuation (100%)
-            java.math.BigDecimal hedgeValue = repo.getHedgeValuation(accountId, today);
-            repo.saveHedgeValuation(accountId, today, hedgeValue);
-            log.debug("Hedge valuation for account {}: {}", accountId, hedgeValue);
-
             // Check if all client accounts complete, publish sign-off
             if (repo.isClientComplete(snapshot.clientId(), today)) {
                 publishEvent("CLIENT_SIGNOFF", accountId, snapshot.clientId(), repo.countClientAccounts(snapshot.clientId()));

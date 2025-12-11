@@ -167,34 +167,6 @@ public class DataRepository {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // HEDGE VALUATION (100%)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Calculate total hedge valuation for an account.
-     * This is the sum of (quantity * price) for all positions.
-     */
-    public BigDecimal getHedgeValuation(Integer accountId, LocalDate date) {
-        BigDecimal result = jdbc.queryForObject("""
-                SELECT COALESCE(SUM(quantity * price), 0) 
-                FROM positions 
-                WHERE account_id = ? AND business_date = ?
-                """, BigDecimal.class, accountId, date);
-        return result != null ? result : BigDecimal.ZERO;
-    }
-
-    /**
-     * Save hedge valuation for an account.
-     */
-    public void saveHedgeValuation(Integer accountId, LocalDate date, BigDecimal valuation) {
-        jdbc.update("""
-                INSERT INTO hedge_valuations (account_id, business_date, valuation, created_at)
-                VALUES (?, ?, ?, NOW())
-                ON CONFLICT (account_id, business_date) DO UPDATE SET valuation = ?, updated_at = NOW()
-                """, accountId, date, valuation, valuation);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
     // AUDIT
     // ═══════════════════════════════════════════════════════════════════════════
 
