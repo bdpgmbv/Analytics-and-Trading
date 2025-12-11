@@ -1,63 +1,113 @@
 package com.vyshali.priceservice.service;
 
-/*
- * 12/02/2025 - 6:46 PM
- * @author Vyshali Prabananth Lal
- */
-
 import com.vyshali.priceservice.dto.FxRateDTO;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * IMPROVED: FX cache with null-safety and configurable base currency.
+ */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class FxCacheService {
 
-    // Decoupled: Uses Events instead of direct ValuationService dependency
     private final ApplicationEventPublisher publisher;
 
-    // Local Hot Cache for FX
-    private final Map<String, FxRateDTO> fxRates = new ConcurrentHashMap<>();
+    @Value("${app.pricing.base-currency:USD}")
+    private String baseCurrency;
 
-    // REVERSE INDEX: Currency -> List of Products
+    private final Map<String, FxRateDTO> fxRates = new ConcurrentHashMap<>();
     private final Map<String, Set<Integer>> currencyProductIndex = new ConcurrentHashMap<>();
 
     public void registerProductCurrency(Integer productId, String currency) {
-        currencyProductIndex.computeIfAbsent(currency, k -> ConcurrentHashMap.newKeySet()).add(productId);
+        if (productId == null || currency == null) return;
+        currencyProductIndex
+            .computeIfAbsent(currency.toUpperCase(), k -> ConcurrentHashMap.newKeySet())
+            .add(productId);
     }
 
     public void updateFxRate(FxRateDTO rate) {
-        fxRates.put(rate.currencyPair(), rate);
+        if (rate == null || rate.currencyPair() == null) {
+            log.warn("Attempted to update null FX rate");
+            return;
+        }
+        
+        String pair = rate.currencyPair().toUpperCase();
+        fxRates.put(pair, rate);
 
-        // --- RIPPLE LOGIC ---
-        String ccy1 = rate.currencyPair().substring(0, 3);
-        String ccy2 = rate.currencyPair().substring(3, 6);
-
-        triggerRipple(ccy1);
-        triggerRipple(ccy2);
-    }
-
-    private void triggerRipple(String currency) {
-        Set<Integer> affectedProducts = currencyProductIndex.get(currency);
-        if (affectedProducts != null && !affectedProducts.isEmpty()) {
-            // Publish Event to break circular dependency
-            publisher.publishEvent(new FxRippleEvent(affectedProducts));
+        // Trigger ripple for affected products
+        if (pair.length() >= 6) {
+            triggerRipple(pair.substring(0, 3));
+            triggerRipple(pair.substring(3, 6));
         }
     }
 
+    private void triggerRipple(String currency) {
+        Set<Integer> affected = currencyProductIndex.get(currency);
+        if (affected != null && !affected.isEmpty()) {
+            publisher.publishEvent(new FxRippleEvent(Set.copyOf(affected)));
+        }
+    }
+
+    /**
+     * Get conversion rate with null-safety and cross-rate support.
+     */
     public BigDecimal getConversionRate(String fromCcy, String toCcy) {
-        if (fromCcy.equals(toCcy)) return BigDecimal.ONE;
-        String direct = fromCcy + toCcy;
-        if (fxRates.containsKey(direct)) return fxRates.get(direct).rate();
+        // Null safety
+        if (fromCcy == null || toCcy == null) {
+            log.warn("Null currency in conversion: from={}, to={}", fromCcy, toCcy);
+            return BigDecimal.ONE;
+        }
+        
+        String from = fromCcy.toUpperCase();
+        String to = toCcy.toUpperCase();
+        
+        // Same currency = 1:1
+        if (from.equals(to)) return BigDecimal.ONE;
+        
+        // Direct rate: FROM/TO
+        String direct = from + to;
+        if (fxRates.containsKey(direct)) {
+            return fxRates.get(direct).rate();
+        }
+        
+        // Inverse rate: TO/FROM
+        String inverse = to + from;
+        if (fxRates.containsKey(inverse)) {
+            BigDecimal inverseRate = fxRates.get(inverse).rate();
+            if (inverseRate.compareTo(BigDecimal.ZERO) != 0) {
+                return BigDecimal.ONE.divide(inverseRate, 8, RoundingMode.HALF_UP);
+            }
+        }
+        
+        // Cross rate via base currency (e.g., EUR->GBP via USD)
+        String fromBase = from + baseCurrency;
+        String toBase = to + baseCurrency;
+        if (fxRates.containsKey(fromBase) && fxRates.containsKey(toBase)) {
+            BigDecimal fromRate = fxRates.get(fromBase).rate();
+            BigDecimal toRate = fxRates.get(toBase).rate();
+            if (toRate.compareTo(BigDecimal.ZERO) != 0) {
+                return fromRate.divide(toRate, 8, RoundingMode.HALF_UP);
+            }
+        }
+        
+        log.warn("No FX rate found for {}/{}, defaulting to 1.0", from, to);
         return BigDecimal.ONE;
     }
 
-    // Inner Domain Event
+    public String getBaseCurrency() {
+        return baseCurrency;
+    }
+
     public record FxRippleEvent(Set<Integer> affectedProducts) {}
 }
