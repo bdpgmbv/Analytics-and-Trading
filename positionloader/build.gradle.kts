@@ -25,6 +25,7 @@ dependencies {
 
     // Security
     implementation("org.springframework.boot:spring-boot-starter-security")
+    implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
 
     // Kafka
     implementation("org.springframework.kafka:spring-kafka")
@@ -39,6 +40,12 @@ dependencies {
     // Metrics
     implementation("io.micrometer:micrometer-registry-prometheus")
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PHASE 3: TRACING - REQUIRED for KafkaListeners.java Tracer class
+    // ═══════════════════════════════════════════════════════════════════════════
+    implementation("io.micrometer:micrometer-tracing-bridge-otel")
+    implementation("io.opentelemetry:opentelemetry-exporter-otlp")
+
     // Database
     runtimeOnly("org.postgresql:postgresql")
 
@@ -49,6 +56,11 @@ dependencies {
     // JSON
     implementation("com.fasterxml.jackson.core:jackson-databind")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // JSON LOGGING - REQUIRED for logback-spring.xml LogstashEncoder
+    // ═══════════════════════════════════════════════════════════════════════════
+    implementation("net.logstash.logback:logstash-logback-encoder:7.4")
 
     // API Docs
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0")

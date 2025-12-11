@@ -5,19 +5,16 @@ import com.vyshali.positionloader.repository.DataRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Phase 3 Enhancement #11: Reconciliation
+ * Phase 4 Enhancement #19: Position Diff
  * <p>
  * Compares expected vs actual data to detect:
  * - Missing positions
@@ -39,7 +36,7 @@ public class ReconciliationService {
     private static final int MIN_POSITIONS_FOR_PERCENT_CHECK = 10;
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // RECONCILIATION REPORT
+    // RECONCILIATION REPORT (Phase 3)
     // ═══════════════════════════════════════════════════════════════════════════
 
     public record ReconciliationReport(Integer accountId, LocalDate businessDate, LocalDate previousDate,
@@ -55,7 +52,25 @@ public class ReconciliationService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // RECONCILE ACCOUNT
+    // PHASE 4 #19: POSITION DIFF RECORDS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    public enum DiffType {
+        NEW, CLOSED, INCREASED, DECREASED, UNCHANGED, PRICE_ONLY
+    }
+
+    public record PositionDiff(Integer productId, String ticker, DiffType type, BigDecimal previousQuantity,
+                               BigDecimal currentQuantity, BigDecimal previousPrice, BigDecimal currentPrice,
+                               BigDecimal quantityChange, BigDecimal priceChange, double percentChange) {
+    }
+
+    public record PositionDiffReport(Integer accountId, LocalDate currentDate, LocalDate previousDate,
+                                     List<PositionDiff> diffs, int newCount, int closedCount, int increasedCount,
+                                     int decreasedCount, int unchangedCount, BigDecimal totalValueChange) {
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RECONCILE ACCOUNT (Phase 3)
     // ═══════════════════════════════════════════════════════════════════════════
 
     public ReconciliationReport reconcile(Integer accountId, LocalDate date) {
@@ -191,6 +206,93 @@ public class ReconciliationService {
         log.info("Batch reconciliation complete: {} accounts ({} critical, {} warning)", reports.size(), critical, warning);
 
         return reports;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PHASE 4 #19: POSITION DIFF
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Compute detailed position-by-position diff between two dates.
+     */
+    public PositionDiffReport computePositionDiff(Integer accountId, LocalDate currentDate, LocalDate previousDate) {
+        List<Dto.Position> current = repo.getActivePositions(accountId, currentDate);
+        List<Dto.Position> previous = repo.getActivePositions(accountId, previousDate);
+
+        Map<Integer, Dto.Position> currentMap = new HashMap<>();
+        Map<Integer, Dto.Position> previousMap = new HashMap<>();
+        current.forEach(p -> currentMap.put(p.productId(), p));
+        previous.forEach(p -> previousMap.put(p.productId(), p));
+
+        List<PositionDiff> diffs = new ArrayList<>();
+        BigDecimal totalValueChange = BigDecimal.ZERO;
+        int newCount = 0, closedCount = 0, increasedCount = 0, decreasedCount = 0, unchangedCount = 0;
+
+        // Check all products in either list
+        Set<Integer> allProducts = new HashSet<>();
+        allProducts.addAll(currentMap.keySet());
+        allProducts.addAll(previousMap.keySet());
+
+        for (Integer productId : allProducts) {
+            Dto.Position curr = currentMap.get(productId);
+            Dto.Position prev = previousMap.get(productId);
+
+            DiffType type;
+            BigDecimal prevQty = prev != null ? prev.quantity() : BigDecimal.ZERO;
+            BigDecimal currQty = curr != null ? curr.quantity() : BigDecimal.ZERO;
+            BigDecimal prevPrice = prev != null ? prev.price() : BigDecimal.ZERO;
+            BigDecimal currPrice = curr != null ? curr.price() : BigDecimal.ZERO;
+            BigDecimal qtyChange = currQty.subtract(prevQty);
+
+            if (prev == null) {
+                type = DiffType.NEW;
+                newCount++;
+            } else if (curr == null) {
+                type = DiffType.CLOSED;
+                closedCount++;
+            } else {
+                int qtyCompare = currQty.compareTo(prevQty);
+                if (qtyCompare > 0) {
+                    type = DiffType.INCREASED;
+                    increasedCount++;
+                } else if (qtyCompare < 0) {
+                    type = DiffType.DECREASED;
+                    decreasedCount++;
+                } else if (currPrice.compareTo(prevPrice) != 0) {
+                    type = DiffType.PRICE_ONLY;
+                    unchangedCount++;
+                } else {
+                    type = DiffType.UNCHANGED;
+                    unchangedCount++;
+                }
+            }
+
+            BigDecimal prevValue = prevQty.multiply(prevPrice);
+            BigDecimal currValue = currQty.multiply(currPrice);
+            BigDecimal valueChange = currValue.subtract(prevValue);
+            totalValueChange = totalValueChange.add(valueChange);
+
+            double percentChange = 0;
+            if (prevValue.compareTo(BigDecimal.ZERO) != 0) {
+                percentChange = valueChange.divide(prevValue, 4, RoundingMode.HALF_UP).doubleValue();
+            }
+
+            String ticker = curr != null ? curr.ticker() : (prev != null ? prev.ticker() : null);
+
+            diffs.add(new PositionDiff(productId, ticker, type, prevQty, currQty, prevPrice, currPrice, qtyChange, currPrice.subtract(prevPrice), percentChange));
+        }
+
+        // Sort by absolute value change (most significant first)
+        diffs.sort((a, b) -> Double.compare(Math.abs(b.percentChange()), Math.abs(a.percentChange())));
+
+        return new PositionDiffReport(accountId, currentDate, previousDate, diffs, newCount, closedCount, increasedCount, decreasedCount, unchangedCount, totalValueChange);
+    }
+
+    /**
+     * Get position diff with default (today vs yesterday).
+     */
+    public PositionDiffReport computePositionDiff(Integer accountId) {
+        return computePositionDiff(accountId, LocalDate.now(), LocalDate.now().minusDays(1));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
