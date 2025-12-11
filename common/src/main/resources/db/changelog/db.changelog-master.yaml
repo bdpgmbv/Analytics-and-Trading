@@ -1,36 +1,4 @@
 databaseChangeLog:
-  # Core reference data tables
+  # Single consolidated schema file for entire FX Analyzer platform
   - include:
-      file: db/changelog/changes/001-core-schema.sql
-
-  # Trading tables (Transactions, Positions, Prices)
-  - include:
-      file: db/changelog/changes/002-trading-tables.sql
-
-  # Operations tables
-  - include:
-      file: db/changelog/changes/003-ops-schema.sql
-
-  # Hedge orders for FIX trading
-  - include:
-      file: db/changelog/changes/004-hedge-orders.sql
-
-  # Additional reference tables (Clients, Funds, Audit_Logs, etc.)
-  - include:
-      file: db/changelog/changes/005-missing-tables.sql
-
-  # Column additions to existing tables
-  - include:
-      file: db/changelog/changes/006-add-missing-columns.sql
-
-  # Trade lifecycle tracking (was missing from master!)
-  - include:
-      file: db/changelog/changes/007-trade-lifecycle.sql
-
-  # NEW: EOD runs tracking table for Position Loader
-  - include:
-      file: db/changelog/changes/008-eod-runs.sql
-
-  # NEW: Fix Positions table to match what Position Loader expects
-  - include:
-      file: db/changelog/changes/009-positions-loader-columns.sql
+      file: db/changelog/fxanalyzer-complete-schema.sql
