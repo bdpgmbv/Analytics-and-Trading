@@ -1,40 +1,139 @@
 server:
-  port: 8080 # Distinct Port
+  port: 8082  # Distinct port for Trade Fill Processor
 
 spring:
   application:
     name: tradefillprocessor
 
+  threads:
+    virtual:
+      enabled: true
+
+  # --- Kafka Configuration ---
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:
       group-id: trade-processor-group
-      auto-offset-reset: latest
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        max.poll.records: 100
+        session.timeout.ms: 30000
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+    listener:
+      ack-mode: MANUAL_IMMEDIATE
+      concurrency: 3
 
+  # --- Database Configuration ---
   datasource:
-    url: jdbc:postgresql://localhost:5432/analyticsandtrading
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/analyticsandtrading}
     username: ${DB_USER:postgres}
     password: ${DB_PASS:password}
+    driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      pool-name: TradeFillPool
 
+  # --- FIXED: Use common schema from shared library ---
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+    enabled: true
+    contexts: dev,test
+
+  # --- Redis Configuration ---
   data:
     redis:
-      host: localhost
-      port: 6379
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 10
+          max-idle: 5
+          min-idle: 2
+
+  # --- Jackson Configuration ---
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+
+# --- Observability ---
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "health,metrics,prometheus,info"
+  endpoint:
+    health:
+      show-details: when_authorized
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://tempo:9411/api/v2/spans}
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+# --- Application Configuration ---
+app:
+  trade:
+    # VWAP calculation window
+    aggregation-window-ms: 5000
+    # Maximum fills to aggregate before forcing flush
+    max-fills-per-order: 100
+    # Orphan detection threshold
+    orphan-threshold-minutes: 30
+
+  # Dead Letter Queue settings
+  dlq:
+    max-retries: 3
+    retry-delay-ms: 1000
+    topic-suffix: ".DLQ"
+
+# --- Logging ---
+logging:
+  level:
+    com.vyshali.tradefillprocessor: DEBUG
+    org.springframework.kafka: INFO
+    org.springframework.jdbc: DEBUG
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] [%X{traceId},%X{spanId}] %-5level %logger{36} - %msg%n"
+
+---
+# Production Profile
+spring:
+  config:
+    activate:
+      on-profile: prod
 
   liquibase:
-    change-log: classpath:db/changelog/changes/001-fills-schema.sql
-    enabled: true
+    contexts: prod
+
+logging:
+  level:
+    com.vyshali.tradefillprocessor: INFO
+    org.springframework.kafka: WARN
+    org.springframework.jdbc: WARN
 
 management:
   tracing:
     sampling:
-      probability: 1.0 # Log 100% of requests (for dev/demo only)
-  zipkin:
-    tracing:
-      endpoint: http://tempo:9411/api/v2/spans # Send traces to Tempo container
-  endpoints:
-    web:
-      exposure:
-        include: "health,metrics,prometheus"
+      probability: 0.1  # Sample 10% in production

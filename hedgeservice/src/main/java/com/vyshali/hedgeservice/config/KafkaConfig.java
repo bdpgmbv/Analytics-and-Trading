@@ -1,11 +1,10 @@
-package com.vyshali.tradefillprocessor.config;
+package com.vyshali.hedgeservice.config;
 
 /*
- * 12/11/2025 - Kafka Configuration for Trade Fill Processor
+ * 12/11/2025 - Kafka Configuration for Hedge Service
  * @author Vyshali Prabananth Lal
  *
- * Configures Kafka consumers and producers for execution report processing.
- * Includes DLQ support and exactly-once semantics.
+ * Configures Kafka consumer with error handling and DLQ support.
  */
 
 import lombok.extern.slf4j.Slf4j;
@@ -20,11 +19,9 @@ import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.*;
 import org.springframework.kafka.listener.CommonErrorHandler;
-import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.serializer.JsonSerializer;
-import org.springframework.kafka.transaction.KafkaTransactionManager;
 import org.springframework.util.backoff.FixedBackOff;
 
 import java.util.HashMap;
@@ -38,14 +35,8 @@ public class KafkaConfig {
     @Value("${spring.kafka.bootstrap-servers:localhost:9092}")
     private String bootstrapServers;
 
-    @Value("${spring.kafka.consumer.group-id:trade-processor-group}")
+    @Value("${spring.kafka.consumer.group-id:hedge-svc-group}")
     private String groupId;
-
-    @Value("${app.dlq.max-retries:3}")
-    private int maxRetries;
-
-    @Value("${app.dlq.retry-delay-ms:1000}")
-    private long retryDelayMs;
 
     // ============================================================
     // Consumer Configuration
@@ -58,17 +49,9 @@ public class KafkaConfig {
         props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-
-        // Exactly-once semantics
-        props.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
-
-        // Processing settings
-        props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 50);
-        props.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, 30000);
-        props.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 10000);
-
+        props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 100);
         return new DefaultKafkaConsumerFactory<>(props);
     }
 
@@ -81,14 +64,13 @@ public class KafkaConfig {
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
         factory.setCommonErrorHandler(errorHandler);
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
-        factory.setConcurrency(3);
-
+        factory.getContainerProperties().setAckMode(
+                org.springframework.kafka.listener.ContainerProperties.AckMode.RECORD);
         return factory;
     }
 
     // ============================================================
-    // Producer Configuration (Transactional)
+    // Producer Configuration (for DLQ)
     // ============================================================
 
     @Bean
@@ -97,16 +79,9 @@ public class KafkaConfig {
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
-
-        // Exactly-once semantics
-        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         props.put(ProducerConfig.ACKS_CONFIG, "all");
         props.put(ProducerConfig.RETRIES_CONFIG, 3);
-        props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 1);
-
-        // Transaction support
-        props.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "trade-fill-tx-");
-
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         return new DefaultKafkaProducerFactory<>(props);
     }
 
@@ -116,39 +91,30 @@ public class KafkaConfig {
     }
 
     // ============================================================
-    // Transaction Manager (for exactly-once processing)
-    // ============================================================
-
-    @Bean
-    public KafkaTransactionManager<String, Object> kafkaTransactionManager(
-            ProducerFactory<String, Object> producerFactory) {
-        return new KafkaTransactionManager<>(producerFactory);
-    }
-
-    // ============================================================
-    // Error Handler with Dead Letter Queue
+    // Error Handling with Dead Letter Queue
     // ============================================================
 
     @Bean
     public CommonErrorHandler errorHandler(KafkaTemplate<String, Object> kafkaTemplate) {
+        // Send failed messages to DLQ after 3 retries with 1 second backoff
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
                 kafkaTemplate,
                 (record, exception) -> {
-                    log.error("Trade processing failed - sending to DLQ. Topic: {}, Key: {}, Error: {}",
+                    log.error("Sending to DLQ - Topic: {}, Key: {}, Error: {}",
                             record.topic(), record.key(), exception.getMessage());
                     return new org.apache.kafka.common.TopicPartition(
                             record.topic() + ".DLQ", record.partition());
                 }
         );
 
+        // 3 retries, 1 second between each
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(
                 recoverer,
-                new FixedBackOff(retryDelayMs, maxRetries)
+                new FixedBackOff(1000L, 3L)
         );
 
         // Don't retry on these exceptions
         errorHandler.addNotRetryableExceptions(
-                com.fasterxml.jackson.core.JsonParseException.class,
                 IllegalArgumentException.class,
                 NullPointerException.class
         );

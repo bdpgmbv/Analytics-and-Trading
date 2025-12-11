@@ -1,3 +1,6 @@
+# Trade Fill Processor - Kubernetes Deployment Values
+# Processes execution reports from FX Matrix and updates positions
+
 replicaCount: 2
 
 image:
@@ -7,8 +10,9 @@ image:
 
 service:
   type: ClusterIP
-  port: 8080
+  port: 8082
 
+# Resource allocation
 resources:
   requests:
     memory: "512Mi"
@@ -17,6 +21,73 @@ resources:
     memory: "1Gi"
     cpu: "1000m"
 
+# Environment variables
 env:
   SPRING_PROFILES_ACTIVE: "prod"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres.data-ns.svc.cluster.local:5432/analyticsandtrading"
   SPRING_DATA_REDIS_HOST: "redis-master.data-ns.svc.cluster.local"
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka.data-ns.svc.cluster.local:9092"
+  # Application settings
+  APP_TRADE_ORPHAN_THRESHOLD_MINUTES: "30"
+  APP_TRADE_AGGREGATION_WINDOW_MS: "5000"
+
+# Secrets
+envFrom:
+  - secretRef:
+      name: tradefillprocessor-secrets
+
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: 8082
+  initialDelaySeconds: 45
+  periodSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: 8082
+  initialDelaySeconds: 20
+  periodSeconds: 5
+  failureThreshold: 3
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Horizontal Pod Autoscaler
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+# Kafka consumer group coordination - use StatefulSet for stable names
+statefulSet:
+  enabled: false  # Use Deployment for now
+
+# Service account
+serviceAccount:
+  create: true
+  name: tradefillprocessor-sa
+
+# Security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8082"
+  prometheus.io/path: "/actuator/prometheus"
+
+# Init container to wait for Kafka
+initContainers:
+  - name: wait-for-kafka
+    image: busybox:1.35
+    command: ['sh', '-c', 'until nc -z kafka.data-ns.svc.cluster.local 9092; do echo waiting for kafka; sleep 2; done;']
