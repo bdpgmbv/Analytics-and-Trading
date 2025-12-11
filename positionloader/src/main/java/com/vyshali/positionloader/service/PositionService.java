@@ -20,19 +20,18 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 
 /**
- * Single service for all business logic.
- * <p>
- * Phase 1 Enhancements: Data Validation, Metrics
- * Phase 2 Enhancements:
- * - #6 Batch Switching: Uses STAGING → ACTIVE pattern
- * - #9 Alerting: Integrates with AlertService
+ * Position processing service with all Phase 1-4 enhancements.
  */
 @Slf4j
 @Service
@@ -46,63 +45,84 @@ public class PositionService {
     private final MeterRegistry metrics;
     private final LoaderHealthIndicator healthIndicator;
     private final LoaderConfig config;
-    private final AlertService alertService;  // Phase 2
+    private final AlertService alertService;
+    private final BusinessDayService businessDayService;  // Phase 4
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // EOD PROCESSING (with batch switching)
+    // EOD PROCESSING
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Transactional
     public void processEod(Integer accountId) {
-        LocalDate today = LocalDate.now();
+        processEod(accountId, LocalDate.now());
+    }
+
+    @Transactional
+    public void processEod(Integer accountId, LocalDate businessDate) {
+        // Phase 4 #18: Feature flag check
+        if (!config.features().eodProcessingEnabled()) {
+            log.warn("EOD processing disabled by feature flag");
+            metrics.counter("posloader.eod.skipped", "reason", "feature_disabled").increment();
+            return;
+        }
+
+        if (!config.features().isAccountEnabled(accountId)) {
+            log.info("Account {} disabled by feature flag", accountId);
+            metrics.counter("posloader.eod.skipped", "reason", "account_disabled").increment();
+            return;
+        }
+
+        // Phase 4 #17: Holiday check
+        if (!businessDayService.isBusinessDay(businessDate)) {
+            log.info("Skipping EOD for {} - {} is not a business day", accountId, businessDate);
+            metrics.counter("posloader.eod.skipped", "reason", "holiday").increment();
+            return;
+        }
+
         Timer.Sample timer = Timer.start(metrics);
 
-        // IDEMPOTENCY CHECK: Skip if already completed
-        if (repo.isEodCompleted(accountId, today)) {
-            log.info("EOD already completed for account {}, skipping", accountId);
+        // Idempotency check
+        if (repo.isEodCompleted(accountId, businessDate)) {
+            log.info("EOD already completed for account {} on {}", accountId, businessDate);
             metrics.counter("posloader.eod.skipped", "reason", "already_completed").increment();
             return;
         }
 
-        log.info("Starting EOD for account {}", accountId);
+        log.info("Starting EOD for account {} on {}", accountId, businessDate);
 
         try {
-            repo.recordEodStart(accountId, today);
+            repo.recordEodStart(accountId, businessDate);
 
             // Fetch from MSPM
-            Timer.Sample mspmTimer = Timer.start(metrics);
-            Dto.AccountSnapshot snapshot = fetchFromMspm(accountId, today);
-            mspmTimer.stop(metrics.timer("posloader.mspm.duration"));
-
+            Dto.AccountSnapshot snapshot = fetchFromMspm(accountId, businessDate);
             if (snapshot == null) {
                 throw new PositionLoaderException("MSPM returned null", accountId, true);
             }
 
-            // Save reference data
+            // Phase 4 #16: Duplicate detection
+            if (config.features().duplicateDetectionEnabled() && !snapshot.isEmpty()) {
+                String contentHash = computeContentHash(snapshot.positions());
+                if (repo.isDuplicateSnapshot(accountId, businessDate, contentHash)) {
+                    log.info("Duplicate snapshot detected for account {} - same content as previous", accountId);
+                    metrics.counter("posloader.eod.skipped", "reason", "duplicate_content").increment();
+                    repo.recordEodComplete(accountId, businessDate, 0);
+                    return;
+                }
+                repo.saveSnapshotHash(accountId, businessDate, contentHash);
+            }
+
             repo.ensureReferenceData(snapshot);
 
-            // Insert positions with BATCH SWITCHING (Phase 2)
             int count = 0;
             int batchId = 0;
 
             if (!snapshot.isEmpty()) {
-                // Phase 1: Validation
                 List<Dto.Position> validated = validateAndFilter(snapshot.positions(), accountId);
-
-                // Phase 2: Insert to STAGING batch
-                BatchInsertResult result = repo.insertPositionsToStaging(accountId, validated, "MSPM_EOD", today);
-
+                BatchInsertResult result = repo.insertPositionsToStaging(accountId, validated, "MSPM_EOD", businessDate);
                 batchId = result.batchId();
                 count = result.count();
 
-                // Phase 2: Validate before activation
-                if (!validateBatch(accountId, batchId, validated.size())) {
-                    alertService.batchSwitchFailed(accountId, "Validation failed - count mismatch");
-                    throw new PositionLoaderException("Batch validation failed", accountId, true);
-                }
-
-                // Phase 2: Atomic switch STAGING → ACTIVE
-                boolean activated = repo.activateBatch(accountId, batchId, today);
+                boolean activated = repo.activateBatch(accountId, batchId, businessDate);
                 if (!activated) {
                     alertService.batchSwitchFailed(accountId, "Activation failed");
                     throw new PositionLoaderException("Batch activation failed", accountId, true);
@@ -111,187 +131,201 @@ public class PositionService {
                 metrics.counter("posloader.positions.loaded", "source", "MSPM_EOD").increment(count);
             }
 
-            // Complete
-            repo.recordEodComplete(accountId, today, count);
-            repo.markAccountComplete(accountId, snapshot.clientId(), today);
+            repo.recordEodComplete(accountId, businessDate, count);
+            repo.markAccountComplete(accountId, snapshot.clientId(), businessDate);
 
-            // Check if all client accounts complete, publish sign-off
-            if (repo.isClientComplete(snapshot.clientId(), today)) {
+            if (repo.isClientComplete(snapshot.clientId(), businessDate)) {
                 int accountCount = repo.countClientAccounts(snapshot.clientId());
                 publishEvent("CLIENT_SIGNOFF", accountId, snapshot.clientId(), accountCount);
-                alertService.clientSignoff(snapshot.clientId(), accountCount);  // Phase 2
-                log.info("Client {} sign-off complete", snapshot.clientId());
+                alertService.clientSignoff(snapshot.clientId(), accountCount);
             }
 
-            // Publish event
             publishEvent("EOD_COMPLETE", accountId, snapshot.clientId(), count);
-
-            // Health tracking
             healthIndicator.recordEodSuccess();
-
-            // Metrics
             timer.stop(metrics.timer("posloader.eod.duration", "status", "success"));
             metrics.counter("posloader.eod.completed", "status", "success").increment();
 
-            log.info("EOD complete for account {} (batch={}, positions={})", accountId, batchId, count);
+            log.info("EOD complete for account {} on {} (batch={}, positions={})", accountId, businessDate, batchId, count);
 
         } catch (Exception e) {
-            repo.recordEodFailed(accountId, today, e.getMessage());
+            repo.recordEodFailed(accountId, businessDate, e.getMessage());
             repo.log("EOD_FAILED", accountId.toString(), "SYSTEM", e.getMessage());
-
-            // Health tracking
             healthIndicator.recordEodFailure();
-
-            // Phase 2: Alert on failure
-            int consecutiveFailures = getConsecutiveFailures(accountId);
-            alertService.eodFailed(accountId, e.getMessage(), consecutiveFailures);
-
-            // Metrics
+            alertService.eodFailed(accountId, e.getMessage(), getConsecutiveFailures(accountId));
             timer.stop(metrics.timer("posloader.eod.duration", "status", "failed"));
-            metrics.counter("posloader.eod.completed", "status", "failed", "reason", categorizeError(e)).increment();
-
-            log.error("EOD failed for account {}: {}", accountId, e.getMessage());
+            metrics.counter("posloader.eod.completed", "status", "failed").increment();
             throw e;
         }
     }
 
-    /**
-     * Validate batch before activation.
-     * Basic check: ensure row count matches expected.
-     */
-    private boolean validateBatch(Integer accountId, int batchId, int expectedCount) {
-        // Could add more sophisticated validation here:
-        // - Check for duplicates
-        // - Verify totals match MSPM
-        // - Compare with previous day for anomalies
-
-        // For now, just verify count
-        log.debug("Batch {} validation: expected {} positions", batchId, expectedCount);
-        return expectedCount >= 0;  // Always pass for now - expand in Phase 3
-    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PHASE 4 #21: LATE ARRIVAL HANDLING
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Get consecutive failure count for alerting severity.
+     * Process late EOD data (yesterday's data arriving today).
+     * Validates that the date is not in the future and not too old.
      */
-    private int getConsecutiveFailures(Integer accountId) {
-        List<Dto.EodStatus> history = repo.getEodHistory(accountId, 7);
-        int consecutive = 0;
-        for (Dto.EodStatus status : history) {
-            if ("FAILED".equals(status.status())) {
-                consecutive++;
-            } else {
-                break;
-            }
+    @Transactional
+    public void processLateEod(Integer accountId, LocalDate businessDate) {
+        LocalDate today = LocalDate.now();
+
+        // Validation
+        if (businessDate.isAfter(today)) {
+            throw new IllegalArgumentException("Cannot process future date: " + businessDate);
         }
-        return consecutive;
+
+        if (businessDate.isBefore(today.minusDays(5))) {
+            throw new IllegalArgumentException("Date too old (>5 days): " + businessDate);
+        }
+
+        log.warn("Processing LATE EOD for account {} on {} (today is {})", accountId, businessDate, today);
+        metrics.counter("posloader.eod.late_arrival").increment();
+        repo.log("LATE_EOD", accountId.toString(), "SYSTEM", "Late arrival for " + businessDate);
+
+        // Process normally but with the specified date
+        processEod(accountId, businessDate);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // DATA VALIDATION (Phase 1)
+    // PHASE 4 #16: DUPLICATE DETECTION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Compute MD5 hash of sorted positions for duplicate detection.
+     */
+    private String computeContentHash(List<Dto.Position> positions) {
+        try {
+            // Sort positions by productId for consistent hash
+            List<Dto.Position> sorted = positions.stream().sorted(Comparator.comparingInt(Dto.Position::productId)).toList();
+
+            // Build string representation
+            StringBuilder sb = new StringBuilder();
+            for (Dto.Position p : sorted) {
+                sb.append(p.productId()).append(":").append(p.quantity()).append(":").append(p.price()).append(";");
+            }
+
+            // Compute MD5
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] hash = md.digest(sb.toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (Exception e) {
+            log.warn("Failed to compute content hash: {}", e.getMessage());
+            return null;  // Skip duplicate check
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PHASE 4 #20: MANUAL OVERRIDE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Adjust a position manually (ops override).
+     */
+    @Transactional
+    public void adjustPosition(Integer accountId, Integer productId, BigDecimal newQuantity, BigDecimal newPrice, String reason, String actor) {
+        log.warn("OPS: Manual position adjustment for account {} product {} by {}", accountId, productId, actor);
+
+        // Get current position
+        BigDecimal oldQuantity = repo.getQuantityAsOf(accountId, productId, LocalDate.now());
+
+        // Update
+        repo.updatePosition(accountId, productId, newQuantity, newPrice, LocalDate.now());
+
+        // Audit trail
+        String auditPayload = String.format("qty: %s -> %s, price: %s, reason: %s", oldQuantity, newQuantity, newPrice, reason);
+        repo.log("POSITION_ADJUSTMENT", accountId + ":" + productId, actor, auditPayload);
+
+        metrics.counter("posloader.ops.position_adjusted").increment();
+        alertService.info("POSITION_ADJUSTED", String.format("Account %d product %d adjusted by %s", accountId, productId, actor), accountId.toString());
+    }
+
+    /**
+     * Reset EOD status to allow reprocessing.
+     */
+    @Transactional
+    public void resetEodStatus(Integer accountId, LocalDate date, String actor) {
+        log.warn("OPS: Resetting EOD status for account {} on {} by {}", accountId, date, actor);
+
+        repo.resetEodStatus(accountId, date);
+        repo.log("EOD_RESET", accountId.toString(), actor, "Reset for reprocessing");
+
+        metrics.counter("posloader.ops.eod_reset").increment();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VALIDATION
     // ═══════════════════════════════════════════════════════════════════════════
 
     private List<Dto.Position> validateAndFilter(List<Dto.Position> positions, Integer accountId) {
-        if (!config.validation().enabled()) {
-            log.debug("Validation disabled by config");
+        if (!config.validation().enabled() && !config.features().validationEnabled()) {
             return positions;
         }
 
         List<Dto.Position> valid = new ArrayList<>();
         Set<Integer> seenProductIds = new HashSet<>();
-
-        int nullCount = 0;
-        int duplicateCount = 0;
-        int negativePriceCount = 0;
-        int zeroQuantityCount = 0;
-        int unrealisticPriceCount = 0;
-        int nullProductIdCount = 0;
+        int rejected = 0;
 
         for (Dto.Position pos : positions) {
             if (pos == null) {
-                nullCount++;
+                rejected++;
                 continue;
             }
             if (pos.productId() == null) {
-                nullProductIdCount++;
+                rejected++;
                 continue;
             }
             if (!seenProductIds.add(pos.productId())) {
-                duplicateCount++;
+                rejected++;
                 continue;
             }
             if (pos.price() != null && pos.price().compareTo(BigDecimal.ZERO) < 0) {
-                negativePriceCount++;
+                rejected++;
                 continue;
             }
             if (config.validation().rejectZeroQuantity() && (pos.quantity() == null || pos.quantity().compareTo(BigDecimal.ZERO) == 0)) {
-                zeroQuantityCount++;
+                rejected++;
                 continue;
             }
-            BigDecimal maxPrice = BigDecimal.valueOf(config.validation().maxPriceThreshold());
-            if (pos.price() != null && pos.price().compareTo(maxPrice) > 0) {
-                unrealisticPriceCount++;
+            if (pos.price() != null && pos.price().compareTo(BigDecimal.valueOf(config.validation().maxPriceThreshold())) > 0) {
+                rejected++;
                 continue;
             }
 
             valid.add(pos);
         }
 
-        int totalRejected = nullCount + duplicateCount + negativePriceCount + zeroQuantityCount + unrealisticPriceCount + nullProductIdCount;
-
-        if (totalRejected > 0) {
-            log.warn("Account {}: Validation rejected {} of {} positions", accountId, totalRejected, positions.size());
-
-            // Metrics
-            if (nullCount > 0) metrics.counter("posloader.validation.rejected", "reason", "null").increment(nullCount);
-            if (duplicateCount > 0)
-                metrics.counter("posloader.validation.rejected", "reason", "duplicate").increment(duplicateCount);
-            if (negativePriceCount > 0)
-                metrics.counter("posloader.validation.rejected", "reason", "negative_price").increment(negativePriceCount);
-            if (zeroQuantityCount > 0)
-                metrics.counter("posloader.validation.rejected", "reason", "zero_quantity").increment(zeroQuantityCount);
-            if (unrealisticPriceCount > 0)
-                metrics.counter("posloader.validation.rejected", "reason", "unrealistic_price").increment(unrealisticPriceCount);
-            if (nullProductIdCount > 0)
-                metrics.counter("posloader.validation.rejected", "reason", "null_product_id").increment(nullProductIdCount);
-
-            // Phase 2: Alert if rejection rate is high
-            alertService.validationRejectionHigh(accountId, totalRejected, positions.size());
+        if (rejected > 0) {
+            log.warn("Account {}: Validation rejected {} of {} positions", accountId, rejected, positions.size());
+            metrics.counter("posloader.validation.rejected").increment(rejected);
+            alertService.validationRejectionHigh(accountId, rejected, positions.size());
         }
 
         return valid;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // INTRADAY PROCESSING
+    // INTRADAY
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Transactional
     public void processIntraday(Dto.AccountSnapshot snapshot) {
+        if (!config.features().intradayProcessingEnabled()) {
+            metrics.counter("posloader.intraday.skipped", "reason", "feature_disabled").increment();
+            return;
+        }
+
         if (snapshot == null || snapshot.accountId() == null) {
             throw new IllegalArgumentException("Invalid snapshot");
         }
 
-        Timer.Sample timer = Timer.start(metrics);
-
-        try {
-            repo.ensureReferenceData(snapshot);
-
-            if (!snapshot.isEmpty()) {
-                List<Dto.Position> validated = validateAndFilter(snapshot.positions(), snapshot.accountId());
-                int batchId = repo.getNextBatchId(snapshot.accountId());
-                int count = repo.insertPositions(snapshot.accountId(), validated, "INTRADAY", batchId, LocalDate.now());
-
-                publishEvent("INTRADAY", snapshot.accountId(), snapshot.clientId(), count);
-                metrics.counter("posloader.positions.loaded", "source", "INTRADAY").increment(count);
-            }
-
-            timer.stop(metrics.timer("posloader.intraday.duration", "status", "success"));
-            log.debug("Processed intraday for account {}", snapshot.accountId());
-
-        } catch (Exception e) {
-            timer.stop(metrics.timer("posloader.intraday.duration", "status", "failed"));
-            metrics.counter("posloader.intraday.failed").increment();
-            throw e;
+        repo.ensureReferenceData(snapshot);
+        if (!snapshot.isEmpty()) {
+            List<Dto.Position> validated = validateAndFilter(snapshot.positions(), snapshot.accountId());
+            int batchId = repo.getNextBatchId(snapshot.accountId());
+            int count = repo.insertPositions(snapshot.accountId(), validated, "INTRADAY", batchId, LocalDate.now());
+            publishEvent("INTRADAY", snapshot.accountId(), snapshot.clientId(), count);
+            metrics.counter("posloader.positions.loaded", "source", "INTRADAY").increment(count);
         }
     }
 
@@ -300,60 +334,38 @@ public class PositionService {
             Dto.AccountSnapshot snapshot = json.readValue(jsonRecord, Dto.AccountSnapshot.class);
             processIntraday(snapshot);
         } catch (Exception e) {
-            log.error("Failed to parse intraday: {}", e.getMessage());
             throw new PositionLoaderException("Invalid intraday record", null, false, e);
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // UPLOAD PROCESSING
+    // UPLOAD & ROLLBACK
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Transactional
     public int processUpload(Integer accountId, List<Dto.Position> positions) {
         if (positions == null || positions.isEmpty()) return 0;
-
         if (positions.size() > config.maxUploadSize()) {
-            metrics.counter("posloader.upload.rejected", "reason", "too_large").increment();
             throw new IllegalArgumentException("Upload exceeds max size of " + config.maxUploadSize());
         }
-
-        Timer.Sample timer = Timer.start(metrics);
 
         List<Dto.Position> validated = validateAndFilter(positions, accountId);
         int batchId = repo.getNextBatchId(accountId);
         int count = repo.insertPositions(accountId, validated, "UPLOAD", batchId, LocalDate.now());
-
         repo.log("UPLOAD", accountId.toString(), "USER", "Uploaded " + count + " positions");
-
-        timer.stop(metrics.timer("posloader.upload.duration"));
         metrics.counter("posloader.positions.loaded", "source", "UPLOAD").increment(count);
-
         return count;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ROLLBACK SUPPORT (Phase 2)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Rollback EOD for an account to previous batch.
-     * Useful when bad data was loaded and needs to be reverted.
-     */
     @Transactional
     public boolean rollbackEod(Integer accountId, LocalDate date) {
         log.warn("Rolling back EOD for account {} on {}", accountId, date);
-
         boolean success = repo.rollbackBatch(accountId, date);
-
         if (success) {
             repo.log("ROLLBACK", accountId.toString(), "OPS", "Rolled back to previous batch");
             metrics.counter("posloader.eod.rollback", "status", "success").increment();
-            alertService.info("EOD_ROLLBACK", String.format("Account %d rolled back to previous batch", accountId), accountId.toString());
-        } else {
-            metrics.counter("posloader.eod.rollback", "status", "failed").increment();
+            alertService.info("EOD_ROLLBACK", "Account " + accountId + " rolled back", accountId.toString());
         }
-
         return success;
     }
 
@@ -364,21 +376,12 @@ public class PositionService {
     @Retry(name = "mspm", fallbackMethod = "fetchFallback")
     @CircuitBreaker(name = "mspm", fallbackMethod = "fetchFallback")
     public Dto.AccountSnapshot fetchFromMspm(Integer accountId, LocalDate date) {
-        log.debug("Fetching from MSPM: account={}, date={}", accountId, date);
         metrics.counter("posloader.mspm.calls").increment();
-
         return mspmClient.get().uri("/api/v1/accounts/{accountId}/snapshot?businessDate={date}", accountId, date).retrieve().body(Dto.AccountSnapshot.class);
     }
 
     private Dto.AccountSnapshot fetchFallback(Integer accountId, LocalDate date, Exception e) {
-        log.error("MSPM unavailable for account {}: {}", accountId, e.getMessage());
-        metrics.counter("posloader.mspm.failures", "reason", categorizeError(e)).increment();
-
-        // Phase 2: Alert on circuit open
-        if (e.getClass().getSimpleName().contains("Circuit")) {
-            alertService.circuitOpen("mspm", e.getMessage());
-        }
-
+        metrics.counter("posloader.mspm.failures").increment();
         throw new PositionLoaderException("MSPM unavailable: " + e.getMessage(), accountId, false);
     }
 
@@ -387,18 +390,11 @@ public class PositionService {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private void publishEvent(String type, Integer accountId, Integer clientId, int count) {
-        var event = new Dto.PositionChangeEvent(type, accountId, clientId, count);
-        kafka.send(AppConfig.TOPIC_POSITION_CHANGES, accountId.toString(), event);
+        kafka.send(AppConfig.TOPIC_POSITION_CHANGES, accountId.toString(), new Dto.PositionChangeEvent(type, accountId, clientId, count));
         metrics.counter("posloader.events.published", "type", type).increment();
-        log.debug("Published {} event for account {}", type, accountId);
     }
 
-    private String categorizeError(Exception e) {
-        String name = e.getClass().getSimpleName();
-        if (name.contains("Timeout")) return "timeout";
-        if (name.contains("Connection")) return "connection";
-        if (name.contains("Circuit")) return "circuit_open";
-        if (name.contains("Validation")) return "validation";
-        return "unknown";
+    private int getConsecutiveFailures(Integer accountId) {
+        return (int) repo.getEodHistory(accountId, 7).stream().takeWhile(s -> "FAILED".equals(s.status())).count();
     }
 }

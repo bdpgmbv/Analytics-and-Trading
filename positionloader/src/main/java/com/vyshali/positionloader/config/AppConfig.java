@@ -21,64 +21,90 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.client.RestClient;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Single consolidated configuration class.
- * Phase 1 Enhancement #5: Added LoaderConfig for externalized configuration.
+ * Consolidated configuration class.
+ * Phase 4: Added FeatureFlags for runtime feature control.
  */
 @Configuration
 @EnableCaching
 @org.springframework.scheduling.annotation.EnableScheduling
 public class AppConfig {
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // KAFKA TOPIC CONSTANTS
-    // ═══════════════════════════════════════════════════════════════════════════
     public static final String TOPIC_EOD_TRIGGER = "MSPM_EOD_TRIGGER";
     public static final String TOPIC_INTRADAY = "MSPA_INTRADAY";
     public static final String TOPIC_POSITION_CHANGES = "POSITION_CHANGE_EVENTS";
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // EXTERNALIZED CONFIGURATION (Phase 1 - Enhancement #5)
+    // LOADER CONFIGURATION (Phase 1-4)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * All tunable loader parameters in one place.
-     * Override via application.yml or environment variables.
-     *
-     * Examples:
-     *   LOADER_PARALLEL_THREADS=16     → More parallel EOD processing
-     *   LOADER_BATCH_SIZE=1000         → Larger DB batch inserts
-     *   LOADER_MAX_UPLOAD_SIZE=20000   → Allow bigger uploads
-     */
     @ConfigurationProperties(prefix = "loader")
-    public record LoaderConfig(
-            int parallelThreads,
-            int batchSize,
-            int maxUploadSize,
-            int dlqMaxRetries,
-            long dlqRetryIntervalMs,
-            ValidationConfig validation
+    public record LoaderConfig(int parallelThreads, int batchSize, int maxUploadSize, int dlqMaxRetries,
+                               long dlqRetryIntervalMs, ValidationConfig validation, FeatureFlags features,
+                               // Phase 4
+                               ArchivalConfig archival     // Phase 4
     ) {
         public LoaderConfig {
-            // Sensible defaults if not specified
             if (parallelThreads <= 0) parallelThreads = 8;
             if (batchSize <= 0) batchSize = 500;
             if (maxUploadSize <= 0) maxUploadSize = 10000;
             if (dlqMaxRetries <= 0) dlqMaxRetries = 3;
             if (dlqRetryIntervalMs <= 0) dlqRetryIntervalMs = 300000;
             if (validation == null) validation = new ValidationConfig(true, true, 1000000);
+            if (features == null) features = new FeatureFlags(true, true, true, true, true, List.of(), List.of());
+            if (archival == null) archival = new ArchivalConfig(true, 180, "0 0 2 * * SUN");
         }
 
-        public record ValidationConfig(
-                boolean enabled,
-                boolean rejectZeroQuantity,
-                long maxPriceThreshold
-        ) {
+        public record ValidationConfig(boolean enabled, boolean rejectZeroQuantity, long maxPriceThreshold) {
             public ValidationConfig {
                 if (maxPriceThreshold <= 0) maxPriceThreshold = 1000000;
+            }
+        }
+
+        /**
+         * Phase 4 Enhancement #18: Feature Flags
+         * <p>
+         * Control features at runtime without deployment.
+         */
+        public record FeatureFlags(boolean eodProcessingEnabled,       // Master switch for EOD
+                                   boolean intradayProcessingEnabled,  // Master switch for intraday
+                                   boolean validationEnabled,          // Can disable all validation
+                                   boolean duplicateDetectionEnabled,  // Phase 4 #16
+                                   boolean reconciliationEnabled,      // Can disable reconciliation
+                                   List<Integer> disabledAccounts,     // Skip these accounts
+                                   List<Integer> pilotAccounts         // Only process these (if non-empty)
+        ) {
+            public FeatureFlags {
+                if (disabledAccounts == null) disabledAccounts = List.of();
+                if (pilotAccounts == null) pilotAccounts = List.of();
+            }
+
+            /**
+             * Check if processing is allowed for an account.
+             */
+            public boolean isAccountEnabled(Integer accountId) {
+                // If pilot mode, only allow pilot accounts
+                if (!pilotAccounts.isEmpty()) {
+                    return pilotAccounts.contains(accountId);
+                }
+                // Otherwise, check disabled list
+                return !disabledAccounts.contains(accountId);
+            }
+        }
+
+        /**
+         * Phase 4 Enhancement #22: Data Archival Configuration
+         */
+        public record ArchivalConfig(boolean enabled, int retentionDays,      // Archive data older than this
+                                     String cronSchedule     // When to run archival
+        ) {
+            public ArchivalConfig {
+                if (retentionDays <= 0) retentionDays = 180;
+                if (cronSchedule == null) cronSchedule = "0 0 2 * * SUN";
             }
         }
     }
@@ -86,18 +112,14 @@ public class AppConfig {
     @Bean
     @ConfigurationProperties(prefix = "loader")
     public LoaderConfig loaderConfig() {
-        return new LoaderConfig(8, 500, 10000, 3, 300000,
-                new LoaderConfig.ValidationConfig(true, true, 1000000));
+        return new LoaderConfig(8, 500, 10000, 3, 300000, new LoaderConfig.ValidationConfig(true, true, 1000000), new LoaderConfig.FeatureFlags(true, true, true, true, true, List.of(), List.of()), new LoaderConfig.ArchivalConfig(true, 180, "0 0 2 * * SUN"));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // REST CLIENT (for MSPM)
+    // REST CLIENT
     // ═══════════════════════════════════════════════════════════════════════════
     @Value("${mspm.base-url:http://localhost:8080}")
     private String mspmBaseUrl;
-
-    @Value("${mspm.timeout:30}")
-    private int timeoutSeconds;
 
     @Bean
     public RestClient mspmClient() {
@@ -105,7 +127,7 @@ public class AppConfig {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // CACHE (Simple Caffeine)
+    // CACHE
     // ═══════════════════════════════════════════════════════════════════════════
     @Bean
     public CacheManager cacheManager() {
@@ -128,14 +150,13 @@ public class AppConfig {
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-        props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 100);
         return new DefaultKafkaConsumerFactory<>(props);
     }
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, String> batchFactory(ConsumerFactory<String, String> consumerFactory) {
+    public ConcurrentKafkaListenerContainerFactory<String, String> batchFactory(ConsumerFactory<String, String> cf) {
         var factory = new ConcurrentKafkaListenerContainerFactory<String, String>();
-        factory.setConsumerFactory(consumerFactory);
+        factory.setConsumerFactory(cf);
         factory.setBatchListener(true);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         return factory;

@@ -529,3 +529,140 @@ CREATE INDEX IF NOT EXISTS idx_alerts_source ON System_Alerts(source, created_at
 
 COMMENT ON TABLE Account_Batches IS 'Phase 2: Batch tracking for blue/green position deployment';
 COMMENT ON TABLE System_Alerts IS 'Phase 2: Local alert storage for debugging (primary alerts go to Kafka)';
+
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- Phase 4 Schema Additions
+-- Enhancement #16: Duplicate Detection (snapshot_hashes)
+-- Enhancement #17: Holiday Calendar (holidays)
+-- Enhancement #22: Data Archival (positions_archive)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- #17: Holiday Calendar
+CREATE TABLE IF NOT EXISTS holidays (
+    id              SERIAL PRIMARY KEY,
+    holiday_date    DATE NOT NULL,
+    holiday_name    VARCHAR(100) NOT NULL,
+    country         VARCHAR(10) DEFAULT 'US',
+    created_at      TIMESTAMP DEFAULT NOW(),
+    UNIQUE (holiday_date, country)
+);
+
+CREATE INDEX IF NOT EXISTS idx_holidays_date ON holidays(holiday_date);
+CREATE INDEX IF NOT EXISTS idx_holidays_year ON holidays(EXTRACT(YEAR FROM holiday_date));
+
+-- Sample US holidays for 2025
+INSERT INTO holidays (holiday_date, holiday_name, country) VALUES
+    ('2025-01-01', 'New Years Day', 'US'),
+    ('2025-01-20', 'Martin Luther King Jr Day', 'US'),
+    ('2025-02-17', 'Presidents Day', 'US'),
+    ('2025-05-26', 'Memorial Day', 'US'),
+    ('2025-06-19', 'Juneteenth', 'US'),
+    ('2025-07-04', 'Independence Day', 'US'),
+    ('2025-09-01', 'Labor Day', 'US'),
+    ('2025-10-13', 'Columbus Day', 'US'),
+    ('2025-11-11', 'Veterans Day', 'US'),
+    ('2025-11-27', 'Thanksgiving', 'US'),
+    ('2025-12-25', 'Christmas Day', 'US')
+ON CONFLICT DO NOTHING;
+
+-- #16: Duplicate Detection - Snapshot Content Hashes
+CREATE TABLE IF NOT EXISTS snapshot_hashes (
+    id              SERIAL PRIMARY KEY,
+    account_id      INTEGER NOT NULL,
+    business_date   DATE NOT NULL,
+    content_hash    VARCHAR(64) NOT NULL,  -- MD5 hex = 32 chars, SHA256 = 64 chars
+    created_at      TIMESTAMP DEFAULT NOW(),
+    UNIQUE (account_id, business_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshot_hashes_lookup
+    ON snapshot_hashes(account_id, content_hash, business_date);
+
+-- #22: Data Archival - Archive table (same structure as positions)
+CREATE TABLE IF NOT EXISTS positions_archive (
+    id              SERIAL PRIMARY KEY,
+    account_id      INTEGER NOT NULL,
+    product_id      INTEGER NOT NULL,
+    quantity        DECIMAL(18,6),
+    price           DECIMAL(18,6),
+    currency        VARCHAR(3),
+    business_date   DATE NOT NULL,
+    batch_id        INTEGER,
+    source          VARCHAR(50),
+    created_at      TIMESTAMP,
+    updated_at      TIMESTAMP,
+    archived_at     TIMESTAMP DEFAULT NOW()
+);
+
+-- Partitioned by year for efficient archival queries
+CREATE INDEX IF NOT EXISTS idx_positions_archive_date
+    ON positions_archive(business_date);
+CREATE INDEX IF NOT EXISTS idx_positions_archive_account
+    ON positions_archive(account_id, business_date);
+
+-- Add updated_at column to positions if not exists
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'positions' AND column_name = 'updated_at'
+    ) THEN
+        ALTER TABLE positions ADD COLUMN updated_at TIMESTAMP;
+    END IF;
+END $$;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- VIEWS
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Active positions view (joins with account_batches)
+CREATE OR REPLACE VIEW v_active_positions AS
+SELECT
+    p.account_id,
+    p.product_id,
+    p.quantity,
+    p.price,
+    p.currency,
+    p.business_date,
+    p.batch_id,
+    p.source,
+    p.created_at
+FROM positions p
+JOIN account_batches b ON p.account_id = b.account_id AND p.batch_id = b.batch_id
+WHERE b.status = 'ACTIVE';
+
+-- EOD status summary view
+CREATE OR REPLACE VIEW v_eod_summary AS
+SELECT
+    business_date,
+    COUNT(*) FILTER (WHERE status = 'COMPLETED') as completed,
+    COUNT(*) FILTER (WHERE status = 'FAILED') as failed,
+    COUNT(*) FILTER (WHERE status = 'RUNNING') as running,
+    COUNT(*) as total
+FROM eod_runs
+WHERE business_date >= CURRENT_DATE - INTERVAL '7 days'
+GROUP BY business_date
+ORDER BY business_date DESC;
+
+-- Position count by date
+CREATE OR REPLACE VIEW v_daily_position_counts AS
+SELECT
+    business_date,
+    COUNT(DISTINCT account_id) as accounts,
+    COUNT(*) as total_positions,
+    SUM(quantity * price) as total_value
+FROM positions
+WHERE business_date >= CURRENT_DATE - INTERVAL '30 days'
+GROUP BY business_date
+ORDER BY business_date DESC;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- GRANTS (adjust as needed for your environment)
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- GRANT SELECT, INSERT, UPDATE, DELETE ON holidays TO positionloader_app;
+-- GRANT SELECT, INSERT, UPDATE ON snapshot_hashes TO positionloader_app;
+-- GRANT SELECT, INSERT ON positions_archive TO positionloader_app;
+-- GRANT SELECT ON v_active_positions TO positionloader_app;
+-- GRANT SELECT ON v_eod_summary TO positionloader_app;
+-- GRANT SELECT ON v_daily_position_counts TO positionloader_app;

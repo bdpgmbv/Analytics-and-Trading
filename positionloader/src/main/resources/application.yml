@@ -2,7 +2,6 @@ spring:
   application:
     name: positionloader
 
-  # Database
   datasource:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:fxan}
     username: ${DB_USER:fxan_user}
@@ -11,44 +10,32 @@ spring:
       maximum-pool-size: 20
       minimum-idle: 5
       connection-timeout: 5000
-      idle-timeout: 300000
-      max-lifetime: 1800000
-      leak-detection-threshold: 30000
 
-  # Kafka
   kafka:
     bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
     producer:
       acks: all
       retries: 3
-      properties:
-        enable.idempotence: true
-        max.in.flight.requests.per.connection: 5
 
-  # Graceful shutdown
   lifecycle:
     timeout-per-shutdown-phase: 30s
 
-# Server
 server:
   port: ${PORT:8080}
   shutdown: graceful
 
-# MSPM Client
 mspm:
   base-url: ${MSPM_URL:http://localhost:8080}
   timeout: 30
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# LOADER CONFIGURATION (Phase 1 + Phase 2)
+# LOADER CONFIGURATION (Phase 1-4 Complete)
 # ═══════════════════════════════════════════════════════════════════════════════
 loader:
-  # EOD Processing
+  # Core settings (Phase 1)
   parallel-threads: ${EOD_THREADS:8}
   batch-size: ${BATCH_SIZE:500}
   max-upload-size: ${MAX_UPLOAD:10000}
-
-  # Dead Letter Queue
   dlq-max-retries: ${DLQ_MAX_RETRIES:3}
   dlq-retry-interval-ms: ${DLQ_INTERVAL:300000}
 
@@ -58,19 +45,39 @@ loader:
     reject-zero-quantity: ${REJECT_ZERO_QTY:true}
     max-price-threshold: ${MAX_PRICE:1000000}
 
-  # Phase 2: Rate Limiting
+  # Rate limiting (Phase 2)
   rate-limit:
-    max-concurrent: ${MAX_CONCURRENT:20}         # Max concurrent operations
+    max-concurrent: ${MAX_CONCURRENT:20}
 
-  # Phase 2: Alerting
+  # Alerting (Phase 2)
   alerting:
-    dlq-threshold: ${DLQ_ALERT_THRESHOLD:50}     # Alert when DLQ depth exceeds this
+    dlq-threshold: ${DLQ_ALERT_THRESHOLD:50}
+
+  # Consumer lag (Phase 3)
+  consumer-lag:
+    check-interval-ms: 60000
+    alert-threshold: ${LAG_ALERT_THRESHOLD:1000}
+
+  # Feature flags (Phase 4)
+  features:
+    eod-processing-enabled: ${EOD_ENABLED:true}
+    intraday-processing-enabled: ${INTRADAY_ENABLED:true}
+    validation-enabled: ${VALIDATION_ENABLED:true}
+    duplicate-detection-enabled: ${DUPLICATE_DETECTION:true}
+    reconciliation-enabled: ${RECONCILIATION_ENABLED:true}
+    disabled-accounts: ${DISABLED_ACCOUNTS:}      # Comma-separated list
+    pilot-accounts: ${PILOT_ACCOUNTS:}            # If set, only these accounts process
+
+  # Data archival (Phase 4)
+  archival:
+    enabled: ${ARCHIVAL_ENABLED:true}
+    retention-days: ${RETENTION_DAYS:180}
+    cron-schedule: ${ARCHIVAL_CRON:0 0 2 * * SUN}   # 2 AM every Sunday
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# RESILIENCE4J - Phase 1 + Phase 2
+# RESILIENCE4J
 # ═══════════════════════════════════════════════════════════════════════════════
 resilience4j:
-  # Phase 1: Retry with exponential backoff
   retry:
     instances:
       mspm:
@@ -78,26 +85,14 @@ resilience4j:
         wait-duration: 1s
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
-        retry-exceptions:
-          - java.net.SocketTimeoutException
-          - java.net.ConnectException
-          - org.springframework.web.client.ResourceAccessException
-        ignore-exceptions:
-          - org.springframework.web.client.HttpClientErrorException$NotFound
-          - org.springframework.web.client.HttpClientErrorException$BadRequest
 
-  # Phase 2: Circuit Breakers
   circuitbreaker:
     instances:
-      # MSPM API circuit breaker
       mspm:
         register-health-indicator: true
         sliding-window-size: 10
         failure-rate-threshold: 50
         wait-duration-in-open-state: 30s
-        permitted-number-of-calls-in-half-open-state: 3
-
-      # Database circuit breaker (Phase 2 Enhancement #7)
       database:
         register-health-indicator: true
         sliding-window-size: 10
@@ -105,55 +100,55 @@ resilience4j:
         slow-call-rate-threshold: 80
         slow-call-duration-threshold: 2s
         wait-duration-in-open-state: 30s
-        permitted-number-of-calls-in-half-open-state: 3
-        automatic-transition-from-open-to-half-open-enabled: true
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ACTUATOR - Health & Metrics
+# OBSERVABILITY
 # ═══════════════════════════════════════════════════════════════════════════════
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus,circuitbreakers,circuitbreakerevents
+        include: health,info,metrics,prometheus,circuitbreakers
   endpoint:
     health:
       show-details: when_authorized
       probes:
         enabled: true
-      group:
-        readiness:
-          include: readinessState,db,circuitBreakers
-        liveness:
-          include: livenessState,loaderHealth
   health:
-    defaults:
-      enabled: true
     circuitbreakers:
       enabled: true
   metrics:
     tags:
       application: ${spring.application.name}
       environment: ${ENVIRONMENT:dev}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+
+  # Tracing (Phase 3)
+  tracing:
+    enabled: ${TRACING_ENABLED:true}
+    sampling:
+      probability: ${TRACING_SAMPLE_RATE:1.0}
+    propagation:
+      type: w3c
+
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
 
 # Logging
 logging:
   level:
     root: INFO
     com.vyshali: ${LOG_LEVEL:INFO}
-    # Resilience4j events
     io.github.resilience4j: INFO
-    org.apache.kafka: WARN
-    org.springframework.kafka: WARN
   pattern:
-    console: "%d{HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+    console: "%d{HH:mm:ss} [%thread] [%X{traceId:-}] %-5level %logger{36} - %msg%n"
 
-# Swagger
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
-  api-docs:
-    path: /api-docs
 
 ---
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -166,24 +161,21 @@ spring:
 
 loader:
   parallel-threads: 4
-  rate-limit:
-    max-concurrent: 10
   validation:
-    enabled: true
     reject-zero-quantity: false
+  features:
+    duplicate-detection-enabled: false    # Faster dev testing
+  archival:
+    enabled: false                        # Don't archive in dev
 
-resilience4j:
-  circuitbreaker:
-    instances:
-      mspm:
-        wait-duration-in-open-state: 10s
-      database:
-        wait-duration-in-open-state: 10s
+management:
+  tracing:
+    sampling:
+      probability: 1.0
 
 logging:
   level:
     com.vyshali: DEBUG
-    io.github.resilience4j: DEBUG
 
 ---
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -199,11 +191,13 @@ loader:
   batch-size: 1000
   rate-limit:
     max-concurrent: 40
-  alerting:
-    dlq-threshold: 100
-  validation:
-    enabled: true
-    reject-zero-quantity: true
+  archival:
+    retention-days: 365                   # Keep 1 year in prod
+
+management:
+  tracing:
+    sampling:
+      probability: 0.1                    # 10% sampling
 
 logging:
   level:
