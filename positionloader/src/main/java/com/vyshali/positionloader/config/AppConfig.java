@@ -1,11 +1,10 @@
 package com.vyshali.positionloader.config;
 
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 
 /**
  * Main application configuration.
- * Contains shared constants and enables configuration property binding.
+ * Contains shared constants for Kafka topics, consumer groups, statuses, etc.
  * 
  * Note: Bean definitions have been moved to dedicated config classes:
  * - CacheConfig: Caffeine cache manager
@@ -13,7 +12,6 @@ import org.springframework.context.annotation.Configuration;
  * - RestClientConfig: REST client beans
  */
 @Configuration
-@EnableConfigurationProperties(LoaderProperties.class)
 public class AppConfig {
     
     // ═══════════════════════════════════════════════════════════════════════
@@ -21,7 +19,9 @@ public class AppConfig {
     // ═══════════════════════════════════════════════════════════════════════
     
     public static final String TOPIC_EOD_POSITIONS = "eod-positions";
+    public static final String TOPIC_EOD_TRIGGER = "eod-trigger";
     public static final String TOPIC_INTRADAY_POSITIONS = "intraday-positions";
+    public static final String TOPIC_INTRADAY = "intraday-updates";
     public static final String TOPIC_POSITION_EVENTS = "position-events";
     public static final String TOPIC_TRADE_FILLS = "trade-fills";
     public static final String TOPIC_HEDGE_ORDERS = "hedge-orders";
@@ -51,9 +51,14 @@ public class AppConfig {
     
     public static final String EOD_STATUS_PENDING = "PENDING";
     public static final String EOD_STATUS_IN_PROGRESS = "IN_PROGRESS";
+    public static final String EOD_STATUS_PROCESSING = "PROCESSING";
     public static final String EOD_STATUS_COMPLETED = "COMPLETED";
+    public static final String EOD_STATUS_COMPLETE = "COMPLETE";
     public static final String EOD_STATUS_FAILED = "FAILED";
     public static final String EOD_STATUS_SKIPPED = "SKIPPED";
+    public static final String EOD_STATUS_NO_DATA = "NO_DATA";
+    public static final String EOD_STATUS_DUPLICATE = "DUPLICATE";
+    public static final String EOD_STATUS_VALIDATION_FAILED = "VALIDATION_FAILED";
     
     // ═══════════════════════════════════════════════════════════════════════
     // POSITION SOURCES
@@ -63,6 +68,9 @@ public class AppConfig {
     public static final String SOURCE_MANUAL = "MANUAL";
     public static final String SOURCE_UPLOAD = "UPLOAD";
     public static final String SOURCE_ADJUSTMENT = "ADJUSTMENT";
+    public static final String SOURCE_INTRADAY = "INTRADAY";
+    public static final String SOURCE_EOD = "EOD";
+    public static final String SOURCE_KAFKA = "KAFKA";
     
     // ═══════════════════════════════════════════════════════════════════════
     // CACHE NAMES
@@ -72,6 +80,8 @@ public class AppConfig {
     public static final String CACHE_PRODUCTS = "products";
     public static final String CACHE_FX_RATES = "fxRates";
     public static final String CACHE_HOLIDAYS = "holidays";
+    public static final String CACHE_BUSINESS_DAYS = "businessDays";
+    public static final String CACHE_YEAR_HOLIDAYS = "yearHolidays";
     
     // ═══════════════════════════════════════════════════════════════════════
     // METRICS

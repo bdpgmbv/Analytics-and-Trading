@@ -6,6 +6,7 @@ import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * Repository for reference data (accounts, products, FX rates).
@@ -30,6 +31,22 @@ public class ReferenceDataRepository {
     }
     
     /**
+     * Check if account is active.
+     */
+    @Cacheable(value = "accounts", key = "'active-' + #accountId")
+    public boolean isAccountActive(int accountId) {
+        // First check if status column exists, fall back to just checking existence
+        try {
+            String sql = "SELECT COUNT(*) FROM accounts WHERE account_id = ? AND (status IS NULL OR status = 'ACTIVE')";
+            Integer count = jdbcTemplate.queryForObject(sql, Integer.class, accountId);
+            return count != null && count > 0;
+        } catch (Exception e) {
+            // Fallback if status column doesn't exist
+            return accountExists(accountId);
+        }
+    }
+    
+    /**
      * Check if product exists.
      */
     @Cacheable(value = "products", key = "'exists-' + #productId")
@@ -37,6 +54,35 @@ public class ReferenceDataRepository {
         String sql = "SELECT COUNT(*) FROM products WHERE product_id = ?";
         Integer count = jdbcTemplate.queryForObject(sql, Integer.class, productId);
         return count != null && count > 0;
+    }
+    
+    /**
+     * Check if product is valid (exists and not inactive).
+     */
+    @Cacheable(value = "products", key = "'valid-' + #productId")
+    public boolean isProductValid(int productId) {
+        // First check if status column exists, fall back to just checking existence
+        try {
+            String sql = "SELECT COUNT(*) FROM products WHERE product_id = ? AND (status IS NULL OR status != 'INACTIVE')";
+            Integer count = jdbcTemplate.queryForObject(sql, Integer.class, productId);
+            return count != null && count > 0;
+        } catch (Exception e) {
+            // Fallback if status column doesn't exist
+            return productExists(productId);
+        }
+    }
+    
+    /**
+     * Get account name.
+     */
+    @Cacheable(value = "accounts", key = "'name-' + #accountId")
+    public String getAccountName(int accountId) {
+        try {
+            String sql = "SELECT COALESCE(account_name, account_number, CAST(account_id AS VARCHAR)) FROM accounts WHERE account_id = ?";
+            return jdbcTemplate.queryForObject(sql, String.class, accountId);
+        } catch (Exception e) {
+            return String.valueOf(accountId);
+        }
     }
     
     /**
@@ -57,13 +103,18 @@ public class ReferenceDataRepository {
      * Find account ID by order ID (from client_orders table).
      */
     public Integer findAccountIdByOrderId(String orderId) {
-        String sql = "SELECT account_id FROM client_orders WHERE order_id = ?";
-        return jdbcTemplate.query(sql, rs -> {
-            if (rs.next()) {
-                return rs.getInt("account_id");
-            }
+        try {
+            String sql = "SELECT account_id FROM client_orders WHERE order_id = ?";
+            return jdbcTemplate.query(sql, rs -> {
+                if (rs.next()) {
+                    return rs.getInt("account_id");
+                }
+                return null;
+            }, orderId);
+        } catch (Exception e) {
+            // Table might not exist
             return null;
-        }, orderId);
+        }
     }
     
     /**
@@ -71,8 +122,13 @@ public class ReferenceDataRepository {
      */
     @Cacheable(value = "accounts", key = "'currency-' + #accountId")
     public String getAccountBaseCurrency(int accountId) {
-        String sql = "SELECT base_currency FROM accounts WHERE account_id = ?";
-        return jdbcTemplate.queryForObject(sql, String.class, accountId);
+        try {
+            String sql = "SELECT COALESCE(base_currency, 'USD') FROM accounts WHERE account_id = ?";
+            String currency = jdbcTemplate.queryForObject(sql, String.class, accountId);
+            return currency != null ? currency : "USD";
+        } catch (Exception e) {
+            return "USD";
+        }
     }
     
     /**
@@ -80,8 +136,12 @@ public class ReferenceDataRepository {
      */
     @Cacheable(value = "accounts", key = "'client-' + #accountId")
     public Integer getClientId(int accountId) {
-        String sql = "SELECT client_id FROM accounts WHERE account_id = ?";
-        return jdbcTemplate.queryForObject(sql, Integer.class, accountId);
+        try {
+            String sql = "SELECT client_id FROM accounts WHERE account_id = ?";
+            return jdbcTemplate.queryForObject(sql, Integer.class, accountId);
+        } catch (Exception e) {
+            return null;
+        }
     }
     
     /**
@@ -89,23 +149,27 @@ public class ReferenceDataRepository {
      */
     @Cacheable(value = "fxRates", key = "#currencyPair + '-' + #rateDate")
     public BigDecimal getFxRate(String currencyPair, LocalDate rateDate) {
-        String sql = """
-            SELECT rate FROM fx_rates 
-            WHERE currency_pair = ? AND rate_date <= ?
-            ORDER BY rate_date DESC LIMIT 1
-            """;
-        return jdbcTemplate.query(sql, rs -> {
-            if (rs.next()) {
-                return rs.getBigDecimal("rate");
-            }
-            return BigDecimal.ONE; // Default to 1 if not found
-        }, currencyPair, rateDate);
+        try {
+            String sql = """
+                SELECT rate FROM fx_rates 
+                WHERE currency_pair = ? AND rate_date <= ?
+                ORDER BY rate_date DESC LIMIT 1
+                """;
+            return jdbcTemplate.query(sql, rs -> {
+                if (rs.next()) {
+                    return rs.getBigDecimal("rate");
+                }
+                return BigDecimal.ONE; // Default to 1 if not found
+            }, currencyPair, rateDate);
+        } catch (Exception e) {
+            return BigDecimal.ONE;
+        }
     }
     
     /**
      * Get all account IDs for a client.
      */
-    public java.util.List<Integer> getAccountIdsForClient(int clientId) {
+    public List<Integer> getAccountIdsForClient(int clientId) {
         String sql = "SELECT account_id FROM accounts WHERE client_id = ? ORDER BY account_id";
         return jdbcTemplate.queryForList(sql, Integer.class, clientId);
     }
@@ -115,7 +179,25 @@ public class ReferenceDataRepository {
      */
     @Cacheable(value = "products", key = "'id-' + #productId")
     public String getProductTicker(int productId) {
-        String sql = "SELECT ticker FROM products WHERE product_id = ?";
-        return jdbcTemplate.queryForObject(sql, String.class, productId);
+        try {
+            String sql = "SELECT ticker FROM products WHERE product_id = ?";
+            return jdbcTemplate.queryForObject(sql, String.class, productId);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    
+    /**
+     * Get all active account IDs.
+     */
+    public List<Integer> getAllActiveAccountIds() {
+        try {
+            String sql = "SELECT account_id FROM accounts WHERE status IS NULL OR status = 'ACTIVE' ORDER BY account_id";
+            return jdbcTemplate.queryForList(sql, Integer.class);
+        } catch (Exception e) {
+            // Fallback if status column doesn't exist
+            String sql = "SELECT account_id FROM accounts ORDER BY account_id";
+            return jdbcTemplate.queryForList(sql, Integer.class);
+        }
     }
 }

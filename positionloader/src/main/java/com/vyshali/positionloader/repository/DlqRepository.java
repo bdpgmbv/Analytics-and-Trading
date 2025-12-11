@@ -25,11 +25,22 @@ public class DlqRepository {
     @Transactional
     public long insert(String topic, String messageKey, String payload, String errorMessage) {
         String sql = """
-            INSERT INTO dlq (topic, message_key, payload, error_message, status, created_at)
-            VALUES (?, ?, ?, ?, 'PENDING', CURRENT_TIMESTAMP)
+            INSERT INTO dlq (topic, message_key, payload, error_message, status, retry_count, created_at)
+            VALUES (?, ?, ?, ?, 'PENDING', 0, CURRENT_TIMESTAMP)
             RETURNING id
             """;
-        return jdbcTemplate.queryForObject(sql, Long.class, topic, messageKey, payload, errorMessage);
+        try {
+            Long id = jdbcTemplate.queryForObject(sql, Long.class, topic, messageKey, payload, errorMessage);
+            return id != null ? id : -1;
+        } catch (Exception e) {
+            // Fallback for databases that don't support RETURNING
+            String insertSql = """
+                INSERT INTO dlq (topic, message_key, payload, error_message, status, retry_count, created_at)
+                VALUES (?, ?, ?, ?, 'PENDING', 0, CURRENT_TIMESTAMP)
+                """;
+            jdbcTemplate.update(insertSql, topic, messageKey, payload, errorMessage);
+            return -1;
+        }
     }
     
     /**
@@ -40,7 +51,7 @@ public class DlqRepository {
             SELECT id, topic, message_key, payload, retry_count 
             FROM dlq 
             WHERE status = 'PENDING' 
-            AND retry_count < max_retries
+            AND retry_count < 3
             AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
             ORDER BY created_at
             LIMIT ?
@@ -88,6 +99,15 @@ public class DlqRepository {
     }
     
     /**
+     * Delete a DLQ entry.
+     */
+    @Transactional
+    public void delete(long id) {
+        String sql = "DELETE FROM dlq WHERE id = ?";
+        jdbcTemplate.update(sql, id);
+    }
+    
+    /**
      * Count pending messages.
      */
     public int countPending() {
@@ -106,6 +126,13 @@ public class DlqRepository {
     }
     
     /**
+     * Get DLQ depth (alias for countPending).
+     */
+    public int getDepth() {
+        return countPending();
+    }
+    
+    /**
      * Delete old processed messages.
      */
     @Transactional
@@ -118,5 +145,14 @@ public class DlqRepository {
         return jdbcTemplate.update(sql, daysOld);
     }
     
-    public record DlqMessage(long id, String topic, String messageKey, String payload, int retryCount) {}
+    /**
+     * DLQ message record.
+     */
+    public record DlqMessage(
+        long id, 
+        String topic, 
+        String messageKey, 
+        String payload, 
+        int retryCount
+    ) {}
 }

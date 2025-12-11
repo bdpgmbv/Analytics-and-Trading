@@ -8,15 +8,11 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
-import reactor.core.publisher.Mono;
-import reactor.util.retry.Retry;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -28,19 +24,19 @@ public class MspmClientService {
     
     private static final Logger log = LoggerFactory.getLogger(MspmClientService.class);
     
-    private final WebClient webClient;
+    private final RestClient restClient;
     private final LoaderProperties properties;
     private final Timer apiTimer;
     private final Counter apiCalls;
     private final Counter apiErrors;
     
     public MspmClientService(
-            WebClient.Builder webClientBuilder,
+            RestClient.Builder restClientBuilder,
             LoaderProperties properties,
             MeterRegistry meterRegistry) {
         this.properties = properties;
-        this.webClient = webClientBuilder
-            .baseUrl(properties.mspmBaseUrl())
+        this.restClient = restClientBuilder
+            .baseUrl(properties.mspm().baseUrl())
             .build();
         this.apiTimer = Timer.builder("mspm.api.time")
             .description("MSPM API call time")
@@ -62,16 +58,13 @@ public class MspmClientService {
         
         return apiTimer.record(() -> {
             try {
-                MspmResponse response = webClient.get()
+                MspmResponse response = restClient.get()
                     .uri(uriBuilder -> uriBuilder
                         .path("/api/v1/accounts/{accountId}/positions")
                         .queryParam("businessDate", businessDate.toString())
                         .build(accountId))
                     .retrieve()
-                    .bodyToMono(MspmResponse.class)
-                    .retryWhen(Retry.backoff(3, Duration.ofMillis(500))
-                        .filter(this::isRetryable))
-                    .block(Duration.ofSeconds(30));
+                    .body(MspmResponse.class);
                 
                 if (response == null || response.positions == null) {
                     log.warn("Empty response from MSPM for account {} date {}", 
@@ -88,13 +81,11 @@ public class MspmClientService {
                 
                 return positions;
                 
-            } catch (WebClientResponseException e) {
+            } catch (RestClientException e) {
                 apiErrors.increment();
-                log.error("MSPM API error for account {} date {}: {} {}", 
-                    accountId, businessDate, e.getStatusCode(), e.getMessage());
-                throw new MspmClientException(
-                    "MSPM API returned " + e.getStatusCode(), 
-                    e.getStatusCode().value(), e);
+                log.error("MSPM API error for account {} date {}: {}", 
+                    accountId, businessDate, e.getMessage());
+                throw new MspmClientException("MSPM API call failed: " + e.getMessage(), e);
             } catch (Exception e) {
                 apiErrors.increment();
                 log.error("Failed to fetch from MSPM for account {} date {}", 
@@ -105,63 +96,18 @@ public class MspmClientService {
     }
     
     /**
-     * Fetch positions asynchronously.
-     */
-    public Mono<List<PositionDto>> fetchPositionsAsync(int accountId, LocalDate businessDate) {
-        apiCalls.increment();
-        
-        return webClient.get()
-            .uri(uriBuilder -> uriBuilder
-                .path("/api/v1/accounts/{accountId}/positions")
-                .queryParam("businessDate", businessDate.toString())
-                .build(accountId))
-            .retrieve()
-            .bodyToMono(MspmResponse.class)
-            .retryWhen(Retry.backoff(3, Duration.ofMillis(500))
-                .filter(this::isRetryable))
-            .map(response -> {
-                if (response == null || response.positions == null) {
-                    return List.<PositionDto>of();
-                }
-                return response.positions.stream()
-                    .map(mp -> mapToPositionDto(mp, accountId, businessDate))
-                    .toList();
-            })
-            .doOnError(e -> {
-                apiErrors.increment();
-                log.error("Async fetch failed for account {} date {}", 
-                    accountId, businessDate, e);
-            });
-    }
-    
-    /**
      * Check account status in MSPM.
      */
     public AccountStatus getAccountStatus(int accountId) {
         try {
-            return webClient.get()
+            return restClient.get()
                 .uri("/api/v1/accounts/{accountId}/status", accountId)
                 .retrieve()
-                .bodyToMono(AccountStatus.class)
-                .block(Duration.ofSeconds(10));
+                .body(AccountStatus.class);
         } catch (Exception e) {
             log.warn("Failed to get account status for {}: {}", accountId, e.getMessage());
             return new AccountStatus(accountId, "UNKNOWN", null);
         }
-    }
-    
-    /**
-     * Check if exception is retryable.
-     */
-    private boolean isRetryable(Throwable t) {
-        if (t instanceof WebClientResponseException e) {
-            HttpStatus status = (HttpStatus) e.getStatusCode();
-            return status.is5xxServerError() || 
-                   status == HttpStatus.TOO_MANY_REQUESTS ||
-                   status == HttpStatus.REQUEST_TIMEOUT;
-        }
-        return t instanceof java.net.SocketTimeoutException ||
-               t instanceof java.net.ConnectException;
     }
     
     /**

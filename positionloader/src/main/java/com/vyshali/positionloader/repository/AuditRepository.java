@@ -6,6 +6,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -44,6 +45,38 @@ public class AuditRepository {
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             """;
         jdbcTemplate.update(sql, eventType, entityId, actor, payload);
+    }
+    
+    /**
+     * Log an audit event (simplified interface).
+     */
+    public void log(String eventType, int accountId, String details) {
+        logEvent(eventType, String.valueOf(accountId), "SYSTEM", details);
+    }
+    
+    /**
+     * Log an audit event with date context.
+     */
+    public void log(String eventType, int accountId, LocalDate businessDate, String details) {
+        String payload = String.format("{\"businessDate\":\"%s\",\"details\":\"%s\"}", 
+            businessDate, escapeJson(details));
+        logEvent(eventType, String.valueOf(accountId), "SYSTEM", payload);
+    }
+    
+    /**
+     * Log an audit event with actor.
+     */
+    public void log(String eventType, int accountId, String actor, String details) {
+        logEvent(eventType, String.valueOf(accountId), actor, details);
+    }
+    
+    /**
+     * Log an audit event with actor and date context.
+     */
+    public void log(String eventType, int accountId, LocalDate businessDate, String actor, String details) {
+        String payload = String.format("{\"businessDate\":\"%s\",\"details\":\"%s\"}", 
+            businessDate, escapeJson(details));
+        logEvent(eventType, String.valueOf(accountId), actor, payload);
     }
     
     /**
@@ -89,6 +122,13 @@ public class AuditRepository {
     }
     
     /**
+     * Find events by account.
+     */
+    public List<AuditEvent> findByAccount(int accountId, int limit) {
+        return findByEntity(String.valueOf(accountId), limit);
+    }
+    
+    /**
      * Purge old audit logs.
      */
     @Transactional
@@ -100,6 +140,22 @@ public class AuditRepository {
         return jdbcTemplate.update(sql, daysOld);
     }
     
+    /**
+     * Simple JSON string escaping.
+     */
+    private String escapeJson(String input) {
+        if (input == null) return "";
+        return input
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t");
+    }
+    
+    /**
+     * Audit event record.
+     */
     public record AuditEvent(
         long auditId,
         String eventType,

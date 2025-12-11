@@ -1,5 +1,6 @@
 package com.vyshali.positionloader.service;
 
+import com.vyshali.positionloader.config.LoaderConfig;
 import com.vyshali.positionloader.dto.PositionDto;
 import com.vyshali.positionloader.repository.ReferenceDataRepository;
 import org.slf4j.Logger;
@@ -8,196 +9,117 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
- * Service for validating position data.
+ * Service for validating positions.
  */
 @Service
 public class PositionValidationService {
     
     private static final Logger log = LoggerFactory.getLogger(PositionValidationService.class);
     
-    private static final BigDecimal MAX_QUANTITY = new BigDecimal("999999999999");
-    private static final BigDecimal MAX_PRICE = new BigDecimal("999999999999");
-    
     private final ReferenceDataRepository referenceDataRepository;
+    private final LoaderConfig config;
     
-    public PositionValidationService(ReferenceDataRepository referenceDataRepository) {
+    public PositionValidationService(
+            ReferenceDataRepository referenceDataRepository,
+            LoaderConfig config) {
         this.referenceDataRepository = referenceDataRepository;
+        this.config = config;
     }
     
     /**
      * Validate a list of positions.
      */
     public ValidationResult validate(List<PositionDto> positions) {
+        if (!config.features().validationEnabled()) {
+            return ValidationResult.valid();
+        }
+        
         List<String> errors = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
+        Set<String> duplicateCheck = new HashSet<>();
         
-        if (positions == null || positions.isEmpty()) {
-            errors.add("Position list is empty");
-            return new ValidationResult(false, errors, warnings);
-        }
-        
-        int invalidCount = 0;
         for (int i = 0; i < positions.size(); i++) {
             PositionDto position = positions.get(i);
-            List<String> positionErrors = validatePosition(position, i);
+            String prefix = String.format("Position[%d] (product=%d): ", i, position.productId());
             
-            if (!positionErrors.isEmpty()) {
-                invalidCount++;
-                errors.addAll(positionErrors);
+            // Basic validation
+            if (position.accountId() <= 0) {
+                errors.add(prefix + "Invalid account ID");
             }
             
-            // Add warnings for edge cases
-            warnings.addAll(checkWarnings(position, i));
+            if (position.productId() <= 0) {
+                errors.add(prefix + "Invalid product ID");
+            }
+            
+            if (position.businessDate() == null) {
+                errors.add(prefix + "Business date is required");
+            }
+            
+            if (position.quantity() == null) {
+                errors.add(prefix + "Quantity is required");
+            } else if (config.validation().rejectZeroQuantity() && 
+                    position.quantity().compareTo(BigDecimal.ZERO) == 0) {
+                warnings.add(prefix + "Zero quantity position");
+            }
+            
+            if (position.currency() == null || position.currency().isBlank()) {
+                errors.add(prefix + "Currency is required");
+            } else if (position.currency().length() != 3) {
+                errors.add(prefix + "Invalid currency code: " + position.currency());
+            }
+            
+            // Price threshold check
+            if (position.price() != null) {
+                BigDecimal threshold = BigDecimal.valueOf(config.validation().maxPriceThreshold());
+                if (position.price().abs().compareTo(threshold) > 0) {
+                    warnings.add(prefix + "Price exceeds threshold: " + position.price());
+                }
+            }
+            
+            // Reference data validation
+            if (position.accountId() > 0 && !referenceDataRepository.isAccountActive(position.accountId())) {
+                errors.add(prefix + "Account not found or inactive: " + position.accountId());
+            }
+            
+            if (position.productId() > 0 && !referenceDataRepository.isProductValid(position.productId())) {
+                errors.add(prefix + "Product not found or invalid: " + position.productId());
+            }
+            
+            // Duplicate check within batch
+            String key = position.accountId() + "-" + position.productId() + "-" + position.businessDate();
+            if (!duplicateCheck.add(key)) {
+                errors.add(prefix + "Duplicate position in batch");
+            }
         }
         
-        // Check for duplicates
-        List<String> duplicateWarnings = checkDuplicates(positions);
-        warnings.addAll(duplicateWarnings);
-        
-        boolean isValid = errors.isEmpty();
-        
-        if (isValid) {
-            log.debug("Validated {} positions successfully", positions.size());
-        } else {
-            log.warn("Validation failed: {} errors in {} positions", 
-                errors.size(), invalidCount);
+        if (!errors.isEmpty()) {
+            log.warn("Validation failed with {} errors: {}", errors.size(), errors);
         }
         
-        return new ValidationResult(isValid, errors, warnings);
+        if (!warnings.isEmpty()) {
+            log.info("Validation warnings: {}", warnings);
+        }
+        
+        return new ValidationResult(errors.isEmpty(), errors, warnings);
     }
     
     /**
      * Validate a single position.
      */
-    public List<String> validatePosition(PositionDto position, int index) {
-        List<String> errors = new ArrayList<>();
-        String prefix = "Position[" + index + "]: ";
-        
-        // Required fields
-        if (position.accountId() <= 0) {
-            errors.add(prefix + "Invalid account ID");
-        }
-        
-        if (position.productId() <= 0) {
-            errors.add(prefix + "Invalid product ID");
-        }
-        
-        if (position.businessDate() == null) {
-            errors.add(prefix + "Business date is required");
-        }
-        
-        // Quantity validation
-        if (position.quantity() == null) {
-            errors.add(prefix + "Quantity is required");
-        } else if (position.quantity().abs().compareTo(MAX_QUANTITY) > 0) {
-            errors.add(prefix + "Quantity exceeds maximum allowed value");
-        }
-        
-        // Price validation
-        if (position.price() != null) {
-            if (position.price().compareTo(BigDecimal.ZERO) < 0) {
-                errors.add(prefix + "Price cannot be negative");
-            } else if (position.price().compareTo(MAX_PRICE) > 0) {
-                errors.add(prefix + "Price exceeds maximum allowed value");
-            }
-        }
-        
-        // Currency validation
-        if (position.currency() == null || position.currency().isBlank()) {
-            errors.add(prefix + "Currency is required");
-        } else if (position.currency().length() != 3) {
-            errors.add(prefix + "Currency must be 3-character ISO code");
-        }
-        
-        // Reference data validation (if reference data is available)
-        if (position.accountId() > 0) {
-            try {
-                if (!referenceDataRepository.isAccountActive(position.accountId())) {
-                    errors.add(prefix + "Account " + position.accountId() + " is not active");
-                }
-            } catch (Exception e) {
-                // Reference data not available, skip validation
-                log.debug("Skipping account validation: {}", e.getMessage());
-            }
-        }
-        
-        if (position.productId() > 0) {
-            try {
-                if (!referenceDataRepository.isProductValid(position.productId())) {
-                    errors.add(prefix + "Product " + position.productId() + " is not valid");
-                }
-            } catch (Exception e) {
-                // Reference data not available, skip validation
-                log.debug("Skipping product validation: {}", e.getMessage());
-            }
-        }
-        
-        return errors;
+    public ValidationResult validate(PositionDto position) {
+        return validate(List.of(position));
     }
     
     /**
-     * Check for warning conditions.
+     * Quick check if position is valid (no errors).
      */
-    private List<String> checkWarnings(PositionDto position, int index) {
-        List<String> warnings = new ArrayList<>();
-        String prefix = "Position[" + index + "]: ";
-        
-        // Zero quantity warning
-        if (position.quantity() != null && 
-            position.quantity().compareTo(BigDecimal.ZERO) == 0) {
-            warnings.add(prefix + "Position has zero quantity");
-        }
-        
-        // Zero price warning
-        if (position.price() != null && 
-            position.price().compareTo(BigDecimal.ZERO) == 0 &&
-            position.quantity() != null &&
-            position.quantity().compareTo(BigDecimal.ZERO) != 0) {
-            warnings.add(prefix + "Non-zero position has zero price");
-        }
-        
-        // Market value mismatch warning
-        if (position.quantity() != null && position.price() != null && 
-            position.marketValueLocal() != null) {
-            BigDecimal expected = position.quantity().multiply(position.price()).abs();
-            BigDecimal actual = position.marketValueLocal().abs();
-            BigDecimal diff = expected.subtract(actual).abs();
-            
-            // Allow 1% tolerance
-            if (expected.compareTo(BigDecimal.ZERO) > 0 && 
-                diff.divide(expected, 4, java.math.RoundingMode.HALF_UP)
-                    .compareTo(new BigDecimal("0.01")) > 0) {
-                warnings.add(prefix + "Market value doesn't match qty * price");
-            }
-        }
-        
-        return warnings;
-    }
-    
-    /**
-     * Check for duplicate positions.
-     */
-    private List<String> checkDuplicates(List<PositionDto> positions) {
-        List<String> warnings = new ArrayList<>();
-        
-        // Group by account, product, date, type
-        java.util.Map<String, Long> counts = positions.stream()
-            .collect(java.util.stream.Collectors.groupingBy(
-                p -> p.accountId() + "-" + p.productId() + "-" + 
-                     p.businessDate() + "-" + p.positionType(),
-                java.util.stream.Collectors.counting()
-            ));
-        
-        counts.forEach((key, count) -> {
-            if (count > 1) {
-                warnings.add("Duplicate position key found: " + key + " (count: " + count + ")");
-            }
-        });
-        
-        return warnings;
+    public boolean isValid(PositionDto position) {
+        return validate(position).isValid();
     }
     
     /**
@@ -208,12 +130,20 @@ public class PositionValidationService {
         List<String> errors,
         List<String> warnings
     ) {
-        public boolean hasWarnings() {
-            return warnings != null && !warnings.isEmpty();
+        public static ValidationResult valid() {
+            return new ValidationResult(true, List.of(), List.of());
         }
         
-        public boolean hasErrors() {
-            return errors != null && !errors.isEmpty();
+        public static ValidationResult invalid(List<String> errors) {
+            return new ValidationResult(false, errors, List.of());
+        }
+        
+        public static ValidationResult invalid(String error) {
+            return new ValidationResult(false, List.of(error), List.of());
+        }
+        
+        public boolean hasWarnings() {
+            return warnings != null && !warnings.isEmpty();
         }
     }
 }

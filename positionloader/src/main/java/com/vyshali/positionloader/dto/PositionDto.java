@@ -5,7 +5,7 @@ import java.time.LocalDate;
 
 /**
  * Position Data Transfer Object.
- * Used for transferring position data between layers.
+ * Internal representation of a position used throughout the application.
  */
 public record PositionDto(
     Long positionId,
@@ -26,41 +26,27 @@ public record PositionDto(
 ) {
     
     /**
-     * Compact constructor with defaults.
-     */
-    public PositionDto {
-        if (currency == null) currency = "USD";
-        if (source == null) source = "MSPM";
-        if (positionType == null) positionType = "PHYSICAL";
-        if (quantity == null) quantity = BigDecimal.ZERO;
-        if (price == null) price = BigDecimal.ZERO;
-        if (marketValueLocal == null) marketValueLocal = BigDecimal.ZERO;
-        if (marketValueBase == null) marketValueBase = BigDecimal.ZERO;
-        if (avgCostPrice == null) avgCostPrice = BigDecimal.ZERO;
-        if (costLocal == null) costLocal = BigDecimal.ZERO;
-    }
-    
-    /**
-     * Simplified constructor for common use cases.
+     * Create a position with basic fields.
      */
     public static PositionDto of(int accountId, int productId, LocalDate businessDate,
             BigDecimal quantity, BigDecimal price, String currency) {
+        BigDecimal marketValue = quantity.multiply(price);
         return new PositionDto(
-            null,           // positionId
+            null,
             accountId,
             productId,
             businessDate,
             quantity,
             price,
             currency,
-            quantity.multiply(price),  // marketValueLocal
-            quantity.multiply(price),  // marketValueBase (same if USD)
-            BigDecimal.ZERO,           // avgCostPrice
-            BigDecimal.ZERO,           // costLocal
-            0,                         // batchId
-            "MSPM",                    // source
-            "PHYSICAL",                // positionType
-            false                      // isExcluded
+            marketValue,
+            marketValue,
+            price,
+            marketValue,
+            0,
+            "MANUAL",
+            "PHYSICAL",
+            false
         );
     }
     
@@ -69,21 +55,11 @@ public record PositionDto(
      */
     public PositionDto withSource(String newSource) {
         return new PositionDto(
-            positionId,
-            accountId,
-            productId,
-            businessDate,
-            quantity,
-            price,
-            currency,
-            marketValueLocal,
-            marketValueBase,
-            avgCostPrice,
-            costLocal,
-            batchId,
-            newSource,
-            positionType,
-            isExcluded
+            positionId, accountId, productId, businessDate,
+            quantity, price, currency,
+            marketValueLocal, marketValueBase,
+            avgCostPrice, costLocal,
+            batchId, newSource, positionType, isExcluded
         );
     }
     
@@ -92,28 +68,42 @@ public record PositionDto(
      */
     public PositionDto withBatchId(int newBatchId) {
         return new PositionDto(
-            positionId,
-            accountId,
-            productId,
-            businessDate,
-            quantity,
-            price,
-            currency,
-            marketValueLocal,
-            marketValueBase,
-            avgCostPrice,
-            costLocal,
-            newBatchId,
-            source,
-            positionType,
-            isExcluded
+            positionId, accountId, productId, businessDate,
+            quantity, price, currency,
+            marketValueLocal, marketValueBase,
+            avgCostPrice, costLocal,
+            newBatchId, source, positionType, isExcluded
         );
     }
     
     /**
-     * Calculate market value.
+     * Create a copy with exclusion flag.
      */
-    public BigDecimal calculateMarketValue() {
-        return quantity.multiply(price);
+    public PositionDto withExcluded(boolean excluded) {
+        return new PositionDto(
+            positionId, accountId, productId, businessDate,
+            quantity, price, currency,
+            marketValueLocal, marketValueBase,
+            avgCostPrice, costLocal,
+            batchId, source, positionType, excluded
+        );
+    }
+    
+    /**
+     * Check if position has zero quantity.
+     */
+    public boolean isZeroQuantity() {
+        return quantity == null || quantity.compareTo(BigDecimal.ZERO) == 0;
+    }
+    
+    /**
+     * Check if position is valid (has required fields).
+     */
+    public boolean isValid() {
+        return accountId > 0 
+            && productId > 0 
+            && businessDate != null 
+            && quantity != null 
+            && currency != null && !currency.isBlank();
     }
 }

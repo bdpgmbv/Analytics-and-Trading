@@ -1,6 +1,8 @@
 package com.vyshali.positionloader.config;
 
 import org.springframework.stereotype.Component;
+import java.util.List;
+import java.util.Collections;
 
 /**
  * Loader configuration that provides typed access to loader properties.
@@ -14,12 +16,14 @@ public class LoaderConfig {
     private final Features features;
     private final Dlq dlq;
     private final Processing processing;
+    private final Validation validation;
     
     public LoaderConfig(LoaderProperties properties) {
         this.properties = properties;
         this.features = new Features(properties.featureFlags());
-        this.dlq = new Dlq(properties.dlqRetentionDays());
+        this.dlq = new Dlq(properties.dlqRetentionDays(), properties.dlqMaxRetries());
         this.processing = new Processing(properties.processingThreads(), properties.batchSize());
+        this.validation = new Validation(properties.validation());
     }
     
     /**
@@ -33,7 +37,7 @@ public class LoaderConfig {
      * Maximum retries for DLQ messages.
      */
     public int dlqMaxRetries() {
-        return 3; // Default, could be added to LoaderProperties
+        return properties.dlqMaxRetries();
     }
     
     /**
@@ -65,6 +69,13 @@ public class LoaderConfig {
     }
     
     /**
+     * Validation configuration access.
+     */
+    public Validation validation() {
+        return validation;
+    }
+    
+    /**
      * Get the underlying properties.
      */
     public LoaderProperties properties() {
@@ -75,31 +86,67 @@ public class LoaderConfig {
      * Feature flags configuration.
      */
     public static class Features {
-        private final LoaderProperties.FeatureFlags flags;
+        private final LoaderProperties.FeatureFlagsConfig flags;
         
-        Features(LoaderProperties.FeatureFlags flags) {
-            this.flags = flags != null ? flags : new LoaderProperties.FeatureFlags(
-                true, true, false, false, false);
+        Features(LoaderProperties.FeatureFlagsConfig flags) {
+            this.flags = flags != null ? flags : new LoaderProperties.FeatureFlagsConfig(
+                true, true, true, true, true, true, Collections.emptyList(), Collections.emptyList());
         }
         
         public boolean eodProcessingEnabled() {
-            return flags.eodProcessing();
+            return flags.eodProcessingEnabled();
         }
         
         public boolean intradayProcessingEnabled() {
-            return flags.intradayProcessing();
+            return flags.intradayProcessingEnabled();
+        }
+        
+        public boolean validationEnabled() {
+            return flags.validationEnabled();
         }
         
         public boolean duplicateDetectionEnabled() {
-            return flags.duplicateDetection();
+            return flags.duplicateDetectionEnabled();
+        }
+        
+        public boolean reconciliationEnabled() {
+            return flags.reconciliationEnabled();
         }
         
         public boolean archivalEnabled() {
-            return flags.archival();
+            return flags.archivalEnabled();
         }
         
-        public boolean auditEnabled() {
-            return flags.audit();
+        public List<Integer> disabledAccounts() {
+            return flags.disabledAccounts() != null ? flags.disabledAccounts() : Collections.emptyList();
+        }
+        
+        public List<Integer> pilotAccounts() {
+            return flags.pilotAccounts() != null ? flags.pilotAccounts() : Collections.emptyList();
+        }
+        
+        /**
+         * Check if an account is disabled.
+         */
+        public boolean isAccountDisabled(int accountId) {
+            return disabledAccounts().contains(accountId);
+        }
+        
+        /**
+         * Check if account should be processed (pilot mode check).
+         */
+        public boolean shouldProcessAccount(int accountId) {
+            // If disabled, never process
+            if (isAccountDisabled(accountId)) {
+                return false;
+            }
+            // If pilot accounts are defined, only process those
+            List<Integer> pilots = pilotAccounts();
+            if (pilots != null && !pilots.isEmpty()) {
+                return pilots.contains(accountId);
+            }
+            // Otherwise process all non-disabled accounts
+            return true;
         }
     }
     
@@ -110,9 +157,9 @@ public class LoaderConfig {
         private final int retentionDays;
         private final int maxRetries;
         
-        Dlq(int retentionDays) {
-            this.retentionDays = retentionDays;
-            this.maxRetries = 3;
+        Dlq(int retentionDays, int maxRetries) {
+            this.retentionDays = retentionDays > 0 ? retentionDays : 7;
+            this.maxRetries = maxRetries > 0 ? maxRetries : 3;
         }
         
         public int retentionDays() {
@@ -132,8 +179,8 @@ public class LoaderConfig {
         private final int batchSize;
         
         Processing(int threads, int batchSize) {
-            this.threads = threads;
-            this.batchSize = batchSize;
+            this.threads = threads > 0 ? threads : 4;
+            this.batchSize = batchSize > 0 ? batchSize : 1000;
         }
         
         public int threads() {
@@ -142,6 +189,39 @@ public class LoaderConfig {
         
         public int batchSize() {
             return batchSize;
+        }
+    }
+    
+    /**
+     * Validation configuration.
+     */
+    public static class Validation {
+        private final boolean enabled;
+        private final boolean rejectZeroQuantity;
+        private final int maxPriceThreshold;
+        
+        Validation(LoaderProperties.ValidationConfig config) {
+            if (config != null) {
+                this.enabled = config.enabled();
+                this.rejectZeroQuantity = config.rejectZeroQuantity();
+                this.maxPriceThreshold = config.maxPriceThreshold();
+            } else {
+                this.enabled = true;
+                this.rejectZeroQuantity = true;
+                this.maxPriceThreshold = 1000000;
+            }
+        }
+        
+        public boolean enabled() {
+            return enabled;
+        }
+        
+        public boolean rejectZeroQuantity() {
+            return rejectZeroQuantity;
+        }
+        
+        public int maxPriceThreshold() {
+            return maxPriceThreshold;
         }
     }
 }

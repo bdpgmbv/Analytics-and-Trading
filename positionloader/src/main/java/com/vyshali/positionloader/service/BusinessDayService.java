@@ -3,6 +3,7 @@ package com.vyshali.positionloader.service;
 import com.vyshali.positionloader.repository.HolidayRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
@@ -11,16 +12,17 @@ import java.time.LocalDate;
 import java.util.Set;
 
 /**
- * Service for holiday calendar operations (Phase 4 #20).
+ * Service for business day calculations.
  */
 @Service
-public class HolidayService {
+public class BusinessDayService {
     
-    private static final Logger log = LoggerFactory.getLogger(HolidayService.class);
+    private static final Logger log = LoggerFactory.getLogger(BusinessDayService.class);
+    private static final String DEFAULT_MARKET = "US";
     
     private final HolidayRepository holidayRepository;
     
-    public HolidayService(HolidayRepository holidayRepository) {
+    public BusinessDayService(HolidayRepository holidayRepository) {
         this.holidayRepository = holidayRepository;
     }
     
@@ -42,7 +44,7 @@ public class HolidayService {
      * Check if date is a business day (default market).
      */
     public boolean isBusinessDay(LocalDate date) {
-        return isBusinessDay(date, "US");
+        return isBusinessDay(date, DEFAULT_MARKET);
     }
     
     /**
@@ -66,11 +68,13 @@ public class HolidayService {
      */
     public LocalDate getPreviousBusinessDay(LocalDate date, String market) {
         LocalDate prev = date.minusDays(1);
+        int iterations = 0;
         while (!isBusinessDay(prev, market)) {
             prev = prev.minusDays(1);
+            iterations++;
             // Safety limit
-            if (prev.isBefore(date.minusMonths(1))) {
-                throw new IllegalStateException("Could not find business day within a month");
+            if (iterations > 30) {
+                throw new IllegalStateException("Could not find business day within 30 days");
             }
         }
         return prev;
@@ -80,7 +84,7 @@ public class HolidayService {
      * Get previous business day (default market).
      */
     public LocalDate getPreviousBusinessDay(LocalDate date) {
-        return getPreviousBusinessDay(date, "US");
+        return getPreviousBusinessDay(date, DEFAULT_MARKET);
     }
     
     /**
@@ -88,11 +92,13 @@ public class HolidayService {
      */
     public LocalDate getNextBusinessDay(LocalDate date, String market) {
         LocalDate next = date.plusDays(1);
+        int iterations = 0;
         while (!isBusinessDay(next, market)) {
             next = next.plusDays(1);
+            iterations++;
             // Safety limit
-            if (next.isAfter(date.plusMonths(1))) {
-                throw new IllegalStateException("Could not find business day within a month");
+            if (iterations > 30) {
+                throw new IllegalStateException("Could not find business day within 30 days");
             }
         }
         return next;
@@ -102,7 +108,7 @@ public class HolidayService {
      * Get next business day (default market).
      */
     public LocalDate getNextBusinessDay(LocalDate date) {
-        return getNextBusinessDay(date, "US");
+        return getNextBusinessDay(date, DEFAULT_MARKET);
     }
     
     /**
@@ -133,6 +139,13 @@ public class HolidayService {
     }
     
     /**
+     * Count business days (default market).
+     */
+    public int countBusinessDays(LocalDate startDate, LocalDate endDate) {
+        return countBusinessDays(startDate, endDate, DEFAULT_MARKET);
+    }
+    
+    /**
      * Add business days to a date.
      */
     public LocalDate addBusinessDays(LocalDate date, int days, String market) {
@@ -155,6 +168,13 @@ public class HolidayService {
     }
     
     /**
+     * Add business days (default market).
+     */
+    public LocalDate addBusinessDays(LocalDate date, int days) {
+        return addBusinessDays(date, days, DEFAULT_MARKET);
+    }
+    
+    /**
      * Get today's business date (adjusts for weekends/holidays).
      */
     public LocalDate getTodayBusinessDate(String market) {
@@ -169,6 +189,24 @@ public class HolidayService {
      * Get today's business date (default market).
      */
     public LocalDate getTodayBusinessDate() {
-        return getTodayBusinessDate("US");
+        return getTodayBusinessDate(DEFAULT_MARKET);
+    }
+    
+    /**
+     * Add a holiday.
+     */
+    @CacheEvict(value = {"holidays", "businessDays", "yearHolidays"}, allEntries = true)
+    public void addHoliday(LocalDate date, String name, String country) {
+        log.info("Adding holiday: {} on {} for {}", name, date, country);
+        holidayRepository.addHoliday(date, name, country);
+    }
+    
+    /**
+     * Remove a holiday.
+     */
+    @CacheEvict(value = {"holidays", "businessDays", "yearHolidays"}, allEntries = true)
+    public void removeHoliday(LocalDate date, String country) {
+        log.info("Removing holiday on {} for {}", date, country);
+        holidayRepository.removeHoliday(date, country);
     }
 }

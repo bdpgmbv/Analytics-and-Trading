@@ -1,7 +1,7 @@
 package com.vyshali.positionloader.listener;
 
 import com.vyshali.positionloader.config.AppConfig;
-import com.vyshali.positionloader.config.AppConfig.LoaderConfig;
+import com.vyshali.positionloader.config.LoaderConfig;
 import com.vyshali.positionloader.health.LoaderHealthIndicator;
 import com.vyshali.positionloader.repository.DataRepository;
 import com.vyshali.positionloader.service.AlertService;
@@ -17,6 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.ListConsumerGroupOffsetsResult;
+import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -34,6 +35,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 /**
  * Kafka listener with parallel processing, DLQ, graceful shutdown, rate limiting,
@@ -54,7 +56,7 @@ public class KafkaListeners {
     private final LoaderHealthIndicator healthIndicator;
     private final LoaderConfig config;
     private final AlertService alertService;
-    private final Tracer tracer;  // Phase 3: Tracing
+    private final Tracer tracer;
 
     @Value("${spring.kafka.bootstrap-servers:localhost:9092}")
     private String bootstrapServers;
@@ -120,7 +122,8 @@ public class KafkaListeners {
         try {
             // Get committed offsets
             ListConsumerGroupOffsetsResult offsetsResult = adminClient.listConsumerGroupOffsets(groupId);
-            Map<TopicPartition, OffsetAndMetadata> offsets = offsetsResult.partitionsToOffsetAndMetadata().get(5, TimeUnit.SECONDS);
+            Map<TopicPartition, OffsetAndMetadata> offsets = offsetsResult.partitionsToOffsetAndMetadata()
+                .get(5, TimeUnit.SECONDS);
 
             // Get end offsets
             Set<TopicPartition> partitions = new HashSet<>();
@@ -134,7 +137,15 @@ public class KafkaListeners {
                 return;  // No partitions for this topic
             }
 
-            Map<TopicPartition, Long> endOffsets = adminClient.listOffsets(partitions.stream().collect(java.util.stream.Collectors.toMap(tp -> tp, tp -> org.apache.kafka.clients.admin.OffsetSpec.latest()))).all().get(5, TimeUnit.SECONDS).entrySet().stream().collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, e -> e.getValue().offset()));
+            Map<TopicPartition, OffsetSpec> latestOffsetRequest = partitions.stream()
+                .collect(Collectors.toMap(tp -> tp, tp -> OffsetSpec.latest()));
+            
+            Map<TopicPartition, Long> endOffsets = adminClient.listOffsets(latestOffsetRequest)
+                .all()
+                .get(5, TimeUnit.SECONDS)
+                .entrySet()
+                .stream()
+                .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().offset()));
 
             // Calculate total lag
             long totalLag = 0;
@@ -148,12 +159,16 @@ public class KafkaListeners {
             }
 
             // Record metric
-            metrics.gauge("posloader.consumer.lag", io.micrometer.core.instrument.Tags.of("group", groupId, "topic", topic), totalLag);
+            metrics.gauge("posloader.consumer.lag", 
+                io.micrometer.core.instrument.Tags.of("group", groupId, "topic", topic), 
+                totalLag);
 
             // Alert if lag is high
             if (totalLag > LAG_ALERT_THRESHOLD) {
                 log.warn("High consumer lag for {}/{}: {} messages behind", groupId, topic, totalLag);
-                alertService.warning("CONSUMER_LAG_HIGH", String.format("Consumer group %s is %d messages behind on %s", groupId, totalLag, topic), groupId);
+                alertService.warning("CONSUMER_LAG_HIGH", 
+                    String.format("Consumer group %s is %d messages behind on %s", groupId, totalLag, topic), 
+                    groupId);
             }
 
             log.debug("Consumer lag for {}/{}: {}", groupId, topic, totalLag);
@@ -241,7 +256,11 @@ public class KafkaListeners {
     // EOD PROCESSING WITH TRACING (Phase 3 #13)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @KafkaListener(topics = AppConfig.TOPIC_EOD_TRIGGER, groupId = EOD_CONSUMER_GROUP, containerFactory = "batchFactory")
+    @KafkaListener(
+        topics = AppConfig.TOPIC_EOD_TRIGGER, 
+        groupId = EOD_CONSUMER_GROUP, 
+        containerFactory = "batchKafkaListenerContainerFactory"
+    )
     public void onEod(List<ConsumerRecord<String, String>> records, Acknowledgment ack) {
         if (shouldRejectWork("EOD")) return;
         if (!tryAcquirePermit("EOD")) return;
@@ -253,7 +272,8 @@ public class KafkaListeners {
             batchSpan.tag("batch.size", String.valueOf(records.size()));
             batchSpan.event("batch_received");
 
-            log.info("EOD batch received: {} accounts [traceId={}]", records.size(), batchSpan.context().traceId());
+            log.info("EOD batch received: {} accounts [traceId={}]", 
+                records.size(), batchSpan.context().traceId());
 
             Timer.Sample batchTimer = Timer.start(metrics);
             healthIndicator.jobStarted();
@@ -273,7 +293,10 @@ public class KafkaListeners {
                 batchSpan.event("parsing_complete");
 
                 // Parallel processing with per-account spans
-                List<CompletableFuture<EodResult>> futures = accountIds.stream().map(id -> CompletableFuture.supplyAsync(() -> processEodWithTracing(id, batchSpan), getExecutor())).toList();
+                List<CompletableFuture<EodResult>> futures = accountIds.stream()
+                    .map(id -> CompletableFuture.supplyAsync(
+                        () -> processEodWithTracing(id, batchSpan), getExecutor()))
+                    .toList();
 
                 CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
                 batchSpan.event("all_accounts_processed");
@@ -286,7 +309,8 @@ public class KafkaListeners {
                         else if ("Rate limited".equals(result.error)) rateLimited++;
                         else {
                             failed++;
-                            repo.saveToDlq(AppConfig.TOPIC_EOD_TRIGGER, result.accountId.toString(), result.accountId.toString(), result.error);
+                            repo.saveToDlq(AppConfig.TOPIC_EOD_TRIGGER, 
+                                result.accountId.toString(), result.accountId.toString(), result.error);
                         }
                     } catch (Exception e) {
                         failed++;
@@ -300,7 +324,8 @@ public class KafkaListeners {
                 metrics.counter("posloader.eod.batch_success").increment(success);
                 metrics.counter("posloader.eod.batch_failed").increment(failed);
 
-                log.info("EOD batch complete: {} success, {} failed, {} rate-limited", success, failed, rateLimited);
+                log.info("EOD batch complete: {} success, {} failed, {} rate-limited", 
+                    success, failed, rateLimited);
 
             } finally {
                 healthIndicator.jobEnded();
@@ -352,7 +377,11 @@ public class KafkaListeners {
     // INTRADAY PROCESSING WITH TRACING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @KafkaListener(topics = AppConfig.TOPIC_INTRADAY, groupId = INTRADAY_CONSUMER_GROUP, containerFactory = "batchFactory")
+    @KafkaListener(
+        topics = AppConfig.TOPIC_INTRADAY, 
+        groupId = INTRADAY_CONSUMER_GROUP, 
+        containerFactory = "batchKafkaListenerContainerFactory"
+    )
     public void onIntraday(List<ConsumerRecord<String, String>> records, Acknowledgment ack) {
         if (shouldRejectWork("INTRADAY")) return;
         if (!tryAcquirePermit("INTRADAY")) return;
@@ -420,7 +449,7 @@ public class KafkaListeners {
         log.info("Retrying {} DLQ messages", messages.size());
 
         for (Map<String, Object> msg : messages) {
-            Long id = (Long) msg.get("id");
+            Long id = ((Number) msg.get("id")).longValue();
             String topic = (String) msg.get("topic");
             String payload = (String) msg.get("payload");
             int retryCount = ((Number) msg.get("retry_count")).intValue();

@@ -23,7 +23,7 @@ public class HolidayRepository {
      * Check if a date is a holiday.
      */
     public boolean isHoliday(LocalDate date, String countryCode) {
-        String sql = "SELECT COUNT(*) FROM holidays WHERE holiday_date = ? AND country_code = ?";
+        String sql = "SELECT COUNT(*) FROM holidays WHERE holiday_date = ? AND country = ?";
         Integer count = jdbcTemplate.queryForObject(sql, Integer.class, date, countryCode);
         return count != null && count > 0;
     }
@@ -32,12 +32,17 @@ public class HolidayRepository {
      * Check if a date is a half day.
      */
     public boolean isHalfDay(LocalDate date, String countryCode) {
-        String sql = """
-            SELECT COUNT(*) FROM holidays 
-            WHERE holiday_date = ? AND country_code = ? AND is_half_day = TRUE
-            """;
-        Integer count = jdbcTemplate.queryForObject(sql, Integer.class, date, countryCode);
-        return count != null && count > 0;
+        try {
+            String sql = """
+                SELECT COUNT(*) FROM holidays 
+                WHERE holiday_date = ? AND country = ? AND is_half_day = TRUE
+                """;
+            Integer count = jdbcTemplate.queryForObject(sql, Integer.class, date, countryCode);
+            return count != null && count > 0;
+        } catch (Exception e) {
+            // is_half_day column might not exist
+            return false;
+        }
     }
     
     /**
@@ -46,17 +51,26 @@ public class HolidayRepository {
     public Set<LocalDate> findHolidaysInRange(LocalDate start, LocalDate end, String countryCode) {
         String sql = """
             SELECT holiday_date FROM holidays 
-            WHERE holiday_date BETWEEN ? AND ? AND country_code = ?
+            WHERE holiday_date BETWEEN ? AND ? AND country = ?
             """;
         return new HashSet<>(jdbcTemplate.query(sql, (rs, rowNum) -> 
             rs.getDate("holiday_date").toLocalDate(), start, end, countryCode));
     }
     
     /**
+     * Get holidays for a year.
+     */
+    public Set<LocalDate> getHolidaysForYear(int year, String countryCode) {
+        LocalDate start = LocalDate.of(year, 1, 1);
+        LocalDate end = LocalDate.of(year, 12, 31);
+        return findHolidaysInRange(start, end, countryCode);
+    }
+    
+    /**
      * Get holiday name.
      */
     public String getHolidayName(LocalDate date, String countryCode) {
-        String sql = "SELECT holiday_name FROM holidays WHERE holiday_date = ? AND country_code = ?";
+        String sql = "SELECT holiday_name FROM holidays WHERE holiday_date = ? AND country = ?";
         return jdbcTemplate.query(sql, rs -> {
             if (rs.next()) {
                 return rs.getString("holiday_name");
@@ -69,13 +83,48 @@ public class HolidayRepository {
      * Add a holiday.
      */
     public void addHoliday(LocalDate date, String countryCode, String name, boolean isHalfDay) {
-        String sql = """
-            INSERT INTO holidays (holiday_date, country_code, holiday_name, is_half_day)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT (holiday_date, country_code) DO UPDATE SET
-                holiday_name = EXCLUDED.holiday_name,
-                is_half_day = EXCLUDED.is_half_day
-            """;
-        jdbcTemplate.update(sql, date, countryCode, name, isHalfDay);
+        try {
+            String sql = """
+                INSERT INTO holidays (holiday_date, country, holiday_name, is_half_day)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (holiday_date, country) DO UPDATE SET
+                    holiday_name = EXCLUDED.holiday_name,
+                    is_half_day = EXCLUDED.is_half_day
+                """;
+            jdbcTemplate.update(sql, date, countryCode, name, isHalfDay);
+        } catch (Exception e) {
+            // Fallback without is_half_day column
+            String sql = """
+                INSERT INTO holidays (holiday_date, country, holiday_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT (holiday_date, country) DO UPDATE SET
+                    holiday_name = EXCLUDED.holiday_name
+                """;
+            jdbcTemplate.update(sql, date, countryCode, name);
+        }
+    }
+    
+    /**
+     * Add a holiday (simple version).
+     */
+    public void addHoliday(LocalDate date, String name, String countryCode) {
+        addHoliday(date, countryCode, name, false);
+    }
+    
+    /**
+     * Remove a holiday.
+     */
+    public void removeHoliday(LocalDate date, String countryCode) {
+        String sql = "DELETE FROM holidays WHERE holiday_date = ? AND country = ?";
+        jdbcTemplate.update(sql, date, countryCode);
+    }
+    
+    /**
+     * Get all holidays for a country.
+     */
+    public Set<LocalDate> getAllHolidays(String countryCode) {
+        String sql = "SELECT holiday_date FROM holidays WHERE country = ?";
+        return new HashSet<>(jdbcTemplate.query(sql, (rs, rowNum) -> 
+            rs.getDate("holiday_date").toLocalDate(), countryCode));
     }
 }

@@ -5,6 +5,8 @@ import org.springframework.validation.annotation.Validated;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;
 import java.time.Duration;
+import java.util.List;
+import java.util.Collections;
 
 /**
  * Centralized configuration properties for the Position Loader service.
@@ -15,6 +17,9 @@ import java.time.Duration;
  * loader:
  *   batch-size: 1000
  *   processing-threads: 4
+ *   dlq-retention-days: 7
+ *   dlq-max-retries: 3
+ *   dlq-retry-interval-ms: 300000
  *   rate-limit:
  *     max-concurrent: 20
  *     requests-per-second: 100
@@ -32,9 +37,20 @@ import java.time.Duration;
  *     initial-delay: 1s
  *     max-delay: 30s
  *   feature-flags:
+ *     eod-processing-enabled: true
+ *     intraday-processing-enabled: true
+ *     validation-enabled: true
  *     duplicate-detection-enabled: true
- *     late-eod-enabled: true
+ *     reconciliation-enabled: true
  *     archival-enabled: true
+ *   validation:
+ *     enabled: true
+ *     reject-zero-quantity: true
+ *     max-price-threshold: 1000000
+ *   archival:
+ *     enabled: true
+ *     retention-days: 180
+ *     cron-schedule: "0 0 2 * * SUN"
  * </pre>
  */
 @Validated
@@ -42,12 +58,17 @@ import java.time.Duration;
 public record LoaderProperties(
     @Positive int batchSize,
     @Positive int processingThreads,
+    int dlqRetentionDays,
+    int dlqMaxRetries,
+    long dlqRetryIntervalMs,
     RateLimitConfig rateLimit,
     AlertingConfig alerting,
     ConsumerLagConfig consumerLag,
     MspmConfig mspm,
     RetryConfig retry,
-    FeatureFlagsConfig featureFlags
+    FeatureFlagsConfig featureFlags,
+    ValidationConfig validation,
+    ArchivalConfig archival
 ) {
     
     /**
@@ -56,12 +77,18 @@ public record LoaderProperties(
     public LoaderProperties {
         if (batchSize <= 0) batchSize = 1000;
         if (processingThreads <= 0) processingThreads = 4;
+        if (dlqRetentionDays <= 0) dlqRetentionDays = 7;
+        if (dlqMaxRetries <= 0) dlqMaxRetries = 3;
+        if (dlqRetryIntervalMs <= 0) dlqRetryIntervalMs = 300000L;
         if (rateLimit == null) rateLimit = new RateLimitConfig(20, 100);
         if (alerting == null) alerting = new AlertingConfig(100, false, null);
         if (consumerLag == null) consumerLag = new ConsumerLagConfig(30000L, 10000L);
         if (mspm == null) mspm = new MspmConfig("http://localhost:8080", Duration.ofSeconds(30));
         if (retry == null) retry = new RetryConfig(3, Duration.ofSeconds(1), Duration.ofSeconds(30), 2.0);
-        if (featureFlags == null) featureFlags = new FeatureFlagsConfig(true, true, true, true);
+        if (featureFlags == null) featureFlags = new FeatureFlagsConfig(
+            true, true, true, true, true, true, Collections.emptyList(), Collections.emptyList());
+        if (validation == null) validation = new ValidationConfig(true, true, 1000000);
+        if (archival == null) archival = new ArchivalConfig(true, 180, "0 0 2 * * SUN");
     }
     
     /**
@@ -115,6 +142,7 @@ public record LoaderProperties(
         Duration timeout
     ) {
         public MspmConfig {
+            if (baseUrl == null || baseUrl.isBlank()) baseUrl = "http://localhost:8080";
             if (timeout == null) timeout = Duration.ofSeconds(30);
         }
     }
@@ -137,12 +165,48 @@ public record LoaderProperties(
     }
     
     /**
-     * Feature flags for Phase 4 enhancements
+     * Feature flags for controlling functionality
      */
     public record FeatureFlagsConfig(
+        boolean eodProcessingEnabled,
+        boolean intradayProcessingEnabled,
+        boolean validationEnabled,
         boolean duplicateDetectionEnabled,
-        boolean lateEodEnabled,
+        boolean reconciliationEnabled,
         boolean archivalEnabled,
-        boolean consumerLagMonitoringEnabled
-    ) {}
+        List<Integer> disabledAccounts,
+        List<Integer> pilotAccounts
+    ) {
+        public FeatureFlagsConfig {
+            if (disabledAccounts == null) disabledAccounts = Collections.emptyList();
+            if (pilotAccounts == null) pilotAccounts = Collections.emptyList();
+        }
+    }
+    
+    /**
+     * Validation configuration
+     */
+    public record ValidationConfig(
+        boolean enabled,
+        boolean rejectZeroQuantity,
+        int maxPriceThreshold
+    ) {
+        public ValidationConfig {
+            if (maxPriceThreshold <= 0) maxPriceThreshold = 1000000;
+        }
+    }
+    
+    /**
+     * Archival configuration
+     */
+    public record ArchivalConfig(
+        boolean enabled,
+        int retentionDays,
+        String cronSchedule
+    ) {
+        public ArchivalConfig {
+            if (retentionDays <= 0) retentionDays = 180;
+            if (cronSchedule == null || cronSchedule.isBlank()) cronSchedule = "0 0 2 * * SUN";
+        }
+    }
 }

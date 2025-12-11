@@ -1,209 +1,101 @@
 spring:
   application:
-    name: positionloader
-
+    name: position-loader
+  
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:fxan}
-    username: ${DB_USER:fxan_user}
-    password: ${DB_PASS:fxan_pass}
-    hikari:
-      maximum-pool-size: 20
-      minimum-idle: 5
-      connection-timeout: 5000
-
+    url: jdbc:postgresql://localhost:5432/positionloader
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+  
   kafka:
-    bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
-    producer:
-      acks: all
-      retries: 3
+    bootstrap-servers: localhost:9092
+    consumer:
+      auto-offset-reset: earliest
+      group-id: position-loader
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
 
-  lifecycle:
-    timeout-per-shutdown-phase: 30s
+  cache:
+    type: caffeine
 
-server:
-  port: ${PORT:8080}
-  shutdown: graceful
-
-mspm:
-  base-url: ${MSPM_URL:http://localhost:8080}
-  timeout: 30
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LOADER CONFIGURATION (Phase 1-4 Complete)
-# ═══════════════════════════════════════════════════════════════════════════════
+# Position Loader Configuration
 loader:
-  # Core settings (Phase 1)
-  parallel-threads: ${EOD_THREADS:8}
-  batch-size: ${BATCH_SIZE:500}
-  max-upload-size: ${MAX_UPLOAD:10000}
-  dlq-max-retries: ${DLQ_MAX_RETRIES:3}
-  dlq-retry-interval-ms: ${DLQ_INTERVAL:300000}
-
-  # Validation (Phase 1)
-  validation:
-    enabled: ${VALIDATION_ENABLED:true}
-    reject-zero-quantity: ${REJECT_ZERO_QTY:true}
-    max-price-threshold: ${MAX_PRICE:1000000}
-
-  # Rate limiting (Phase 2)
+  batch-size: 1000
+  processing-threads: 4
+  dlq-retention-days: 7
+  dlq-max-retries: 3
+  dlq-retry-interval-ms: 300000
+  
   rate-limit:
-    max-concurrent: ${MAX_CONCURRENT:20}
-
-  # Alerting (Phase 2)
+    max-concurrent: 20
+    requests-per-second: 100
+  
   alerting:
-    dlq-threshold: ${DLQ_ALERT_THRESHOLD:50}
-
-  # Consumer lag (Phase 3)
+    dlq-threshold: 100
+    email-enabled: false
+    email-recipients: null
+  
   consumer-lag:
-    check-interval-ms: 60000
-    alert-threshold: ${LAG_ALERT_THRESHOLD:1000}
-
-  # Feature flags (Phase 4)
-  features:
-    eod-processing-enabled: ${EOD_ENABLED:true}
-    intraday-processing-enabled: ${INTRADAY_ENABLED:true}
-    validation-enabled: ${VALIDATION_ENABLED:true}
-    duplicate-detection-enabled: ${DUPLICATE_DETECTION:true}
-    reconciliation-enabled: ${RECONCILIATION_ENABLED:true}
-    disabled-accounts: ${DISABLED_ACCOUNTS:}      # Comma-separated list
-    pilot-accounts: ${PILOT_ACCOUNTS:}            # If set, only these accounts process
-
-  # Data archival (Phase 4)
-  archival:
-    enabled: ${ARCHIVAL_ENABLED:true}
-    retention-days: ${RETENTION_DAYS:180}
-    cron-schedule: ${ARCHIVAL_CRON:0 0 2 * * SUN}   # 2 AM every Sunday
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# RESILIENCE4J
-# ═══════════════════════════════════════════════════════════════════════════════
-resilience4j:
+    check-interval-ms: 30000
+    alert-threshold: 10000
+  
+  mspm:
+    base-url: http://localhost:8081
+    timeout: 30s
+  
   retry:
-    instances:
-      mspm:
-        max-attempts: 3
-        wait-duration: 1s
-        enable-exponential-backoff: true
-        exponential-backoff-multiplier: 2
+    max-attempts: 3
+    initial-delay: 1s
+    max-delay: 30s
+    multiplier: 2.0
+  
+  feature-flags:
+    eod-processing-enabled: true
+    intraday-processing-enabled: true
+    validation-enabled: true
+    duplicate-detection-enabled: true
+    reconciliation-enabled: true
+    archival-enabled: true
+    disabled-accounts: []
+    pilot-accounts: []
+  
+  validation:
+    enabled: true
+    reject-zero-quantity: true
+    max-price-threshold: 1000000
+  
+  archival:
+    enabled: true
+    retention-days: 180
+    cron-schedule: "0 0 2 * * SUN"
+  
+  kafka:
+    batch-size: 100
+    poll-timeout-ms: 5000
 
-  circuitbreaker:
-    instances:
-      mspm:
-        register-health-indicator: true
-        sliding-window-size: 10
-        failure-rate-threshold: 50
-        wait-duration-in-open-state: 30s
-      database:
-        register-health-indicator: true
-        sliding-window-size: 10
-        failure-rate-threshold: 50
-        slow-call-rate-threshold: 80
-        slow-call-duration-threshold: 2s
-        wait-duration-in-open-state: 30s
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# OBSERVABILITY
-# ═══════════════════════════════════════════════════════════════════════════════
+# Actuator endpoints
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus,circuitbreakers
+        include: health,info,metrics,prometheus
   endpoint:
     health:
-      show-details: when_authorized
-      probes:
-        enabled: true
-  health:
-    circuitbreakers:
-      enabled: true
+      show-details: always
   metrics:
-    tags:
-      application: ${spring.application.name}
-      environment: ${ENVIRONMENT:dev}
-    distribution:
-      percentiles-histogram:
-        http.server.requests: true
-
-  # Tracing (Phase 3)
-  tracing:
-    enabled: ${TRACING_ENABLED:true}
-    sampling:
-      probability: ${TRACING_SAMPLE_RATE:1.0}
-    propagation:
-      type: w3c
-
-  otlp:
-    tracing:
-      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+    export:
+      prometheus:
+        enabled: true
 
 # Logging
 logging:
   level:
     root: INFO
-    com.vyshali: ${LOG_LEVEL:INFO}
-    io.github.resilience4j: INFO
-  pattern:
-    console: "%d{HH:mm:ss} [%thread] [%X{traceId:-}] %-5level %logger{36} - %msg%n"
+    com.vyshali.positionloader: DEBUG
+    org.springframework.kafka: WARN
+    org.apache.kafka: WARN
 
-springdoc:
-  swagger-ui:
-    path: /swagger-ui.html
-
----
-# ═══════════════════════════════════════════════════════════════════════════════
-# DEV PROFILE
-# ═══════════════════════════════════════════════════════════════════════════════
-spring:
-  config:
-    activate:
-      on-profile: dev
-
-loader:
-  parallel-threads: 4
-  validation:
-    reject-zero-quantity: false
-  features:
-    duplicate-detection-enabled: false    # Faster dev testing
-  archival:
-    enabled: false                        # Don't archive in dev
-
-management:
-  tracing:
-    sampling:
-      probability: 1.0
-
-logging:
-  level:
-    com.vyshali: DEBUG
-
----
-# ═══════════════════════════════════════════════════════════════════════════════
-# PROD PROFILE
-# ═══════════════════════════════════════════════════════════════════════════════
-spring:
-  config:
-    activate:
-      on-profile: prod
-
-loader:
-  parallel-threads: 16
-  batch-size: 1000
-  rate-limit:
-    max-concurrent: 40
-  archival:
-    retention-days: 365                   # Keep 1 year in prod
-
-management:
-  tracing:
-    sampling:
-      probability: 0.1                    # 10% sampling
-
-logging:
-  level:
-    root: WARN
-    com.vyshali: INFO
-
-springdoc:
-  swagger-ui:
-    enabled: false
+# Server
+server:
+  port: 8080

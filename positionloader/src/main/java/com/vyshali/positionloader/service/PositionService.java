@@ -1,5 +1,6 @@
 package com.vyshali.positionloader.service;
 
+import com.vyshali.positionloader.dto.Dto;
 import com.vyshali.positionloader.dto.EodRequest;
 import com.vyshali.positionloader.dto.PositionDto;
 import com.vyshali.positionloader.repository.DataRepository;
@@ -57,6 +58,24 @@ public class PositionService {
     }
     
     /**
+     * Process EOD for an account (today's date).
+     */
+    @Transactional
+    public void processEod(int accountId) {
+        processEod(accountId, LocalDate.now());
+    }
+    
+    /**
+     * Process EOD for an account on a specific date.
+     */
+    @Transactional
+    public void processEod(int accountId, LocalDate businessDate) {
+        log.info("Processing EOD for account {} date {}", accountId, businessDate);
+        EodRequest request = EodRequest.of(accountId, businessDate);
+        eodProcessingService.processEod(accountId, businessDate);
+    }
+    
+    /**
      * Process EOD request.
      */
     @Transactional
@@ -71,6 +90,132 @@ public class PositionService {
         
         return eodProcessingService.processEod(
             request.accountId(), request.businessDate());
+    }
+    
+    /**
+     * Process late EOD for a past date.
+     */
+    @Transactional
+    public void processLateEod(int accountId, LocalDate businessDate) {
+        log.warn("Processing late EOD for account {} date {}", accountId, businessDate);
+        
+        // Validate business date is in the past
+        if (businessDate.isAfter(LocalDate.now())) {
+            throw new IllegalArgumentException("Late EOD can only be processed for past dates");
+        }
+        
+        // Force reprocess even if already completed
+        eodProcessingService.reprocessEod(accountId, businessDate);
+    }
+    
+    /**
+     * Process intraday JSON message.
+     */
+    @Transactional
+    public void processIntradayJson(String json) {
+        log.debug("Processing intraday JSON: {}", json);
+        // Implementation depends on JSON format
+        // This would typically parse the JSON and update positions
+    }
+    
+    /**
+     * Process uploaded positions.
+     */
+    @Transactional
+    public int processUpload(int accountId, List<Dto.Position> positions) {
+        log.info("Processing upload of {} positions for account {}", positions.size(), accountId);
+        
+        // Convert to internal DTO format
+        List<PositionDto> positionDtos = positions.stream()
+            .map(p -> new PositionDto(
+                p.positionId(),
+                p.accountId(),
+                p.productId(),
+                p.businessDate(),
+                p.quantity(),
+                p.price(),
+                p.currency(),
+                p.marketValueLocal(),
+                p.marketValueBase(),
+                BigDecimal.ZERO, // avgCostPrice
+                BigDecimal.ZERO, // costLocal
+                0, // batchId - will be set
+                p.source() != null ? p.source() : "UPLOAD",
+                p.positionType() != null ? p.positionType() : "PHYSICAL",
+                false // isExcluded
+            ))
+            .toList();
+        
+        // Validate
+        var validationResult = validationService.validate(positionDtos);
+        if (!validationResult.isValid()) {
+            throw new IllegalArgumentException("Validation failed: " + validationResult.errors());
+        }
+        
+        LocalDate businessDate = positions.isEmpty() ? LocalDate.now() : 
+            positions.get(0).businessDate();
+        
+        // Create batch and save
+        int batchId = dataRepository.createBatch(accountId, businessDate, "UPLOAD");
+        int saved = dataRepository.savePositions(positionDtos, batchId);
+        dataRepository.completeBatch(batchId, saved);
+        
+        return saved;
+    }
+    
+    /**
+     * Adjust a position manually.
+     */
+    @Transactional
+    public void adjustPosition(int accountId, int productId, BigDecimal quantity, 
+            BigDecimal price, String reason, String actor) {
+        log.warn("Manual position adjustment by {} for account {} product {}: qty={}, reason={}", 
+            actor, accountId, productId, quantity, reason);
+        
+        LocalDate businessDate = LocalDate.now();
+        
+        // Log audit
+        dataRepository.logAudit("POSITION_ADJUSTMENT", accountId, businessDate,
+            String.format("Product %d adjusted to %s by %s: %s", productId, quantity, actor, reason));
+        
+        // Create adjustment position
+        PositionDto adjustment = PositionDto.of(accountId, productId, businessDate, 
+            quantity, price != null ? price : BigDecimal.ZERO, "USD")
+            .withSource("ADJUSTMENT");
+        
+        // Save adjustment
+        int batchId = dataRepository.createBatch(accountId, businessDate, "ADJUSTMENT");
+        dataRepository.savePositions(List.of(adjustment), batchId);
+        dataRepository.completeBatch(batchId, 1);
+    }
+    
+    /**
+     * Reset EOD status to allow reprocessing.
+     */
+    @Transactional
+    public void resetEodStatus(int accountId, LocalDate businessDate, String actor) {
+        log.warn("Resetting EOD status for account {} date {} by {}", accountId, businessDate, actor);
+        
+        dataRepository.updateEodStatus(accountId, businessDate, "PENDING");
+        dataRepository.logAudit("EOD_STATUS_RESET", accountId, businessDate,
+            String.format("EOD status reset by %s", actor));
+    }
+    
+    /**
+     * Rollback to previous batch.
+     */
+    @Transactional
+    public boolean rollbackEod(int accountId, LocalDate businessDate) {
+        log.warn("Rolling back EOD for account {} date {}", accountId, businessDate);
+        
+        boolean success = dataRepository.batches().rollbackToPrevious(accountId);
+        
+        if (success) {
+            dataRepository.logAudit("EOD_ROLLBACK", accountId, businessDate,
+                "Rolled back to previous batch");
+        }
+        
+        return success;
     }
     
     /**

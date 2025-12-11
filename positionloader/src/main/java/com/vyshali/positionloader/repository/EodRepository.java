@@ -6,6 +6,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * Repository for EOD run tracking.
@@ -25,10 +26,17 @@ public class EodRepository {
     public boolean isAlreadyCompleted(int accountId, LocalDate businessDate) {
         String sql = """
             SELECT COUNT(*) FROM eod_runs 
-            WHERE account_id = ? AND business_date = ? AND status = 'COMPLETED'
+            WHERE account_id = ? AND business_date = ? AND status IN ('COMPLETED', 'COMPLETE')
             """;
         Integer count = jdbcTemplate.queryForObject(sql, Integer.class, accountId, businessDate);
         return count != null && count > 0;
+    }
+    
+    /**
+     * Check if EOD is complete (alias for isAlreadyCompleted).
+     */
+    public boolean isComplete(int accountId, LocalDate businessDate) {
+        return isAlreadyCompleted(accountId, businessDate);
     }
     
     /**
@@ -50,8 +58,17 @@ public class EodRepository {
      */
     @Transactional
     public void updateStatus(int accountId, LocalDate businessDate, String status) {
-        String sql = "UPDATE eod_runs SET status = ? WHERE account_id = ? AND business_date = ?";
-        jdbcTemplate.update(sql, status, accountId, businessDate);
+        // First check if record exists
+        String checkSql = "SELECT COUNT(*) FROM eod_runs WHERE account_id = ? AND business_date = ?";
+        Integer count = jdbcTemplate.queryForObject(checkSql, Integer.class, accountId, businessDate);
+        
+        if (count != null && count > 0) {
+            String sql = "UPDATE eod_runs SET status = ? WHERE account_id = ? AND business_date = ?";
+            jdbcTemplate.update(sql, status, accountId, businessDate);
+        } else {
+            // Create new record if it doesn't exist
+            createOrUpdate(accountId, businessDate, status);
+        }
     }
     
     /**
@@ -100,20 +117,84 @@ public class EodRepository {
     /**
      * Find pending EOD runs.
      */
-    public java.util.List<EodRun> findPending() {
+    public List<EodRun> findPending() {
         String sql = """
-            SELECT account_id, business_date, status, created_at 
+            SELECT account_id, business_date, status, started_at 
             FROM eod_runs 
-            WHERE status IN ('PENDING', 'IN_PROGRESS')
-            ORDER BY created_at
+            WHERE status IN ('PENDING', 'IN_PROGRESS', 'PROCESSING')
+            ORDER BY started_at
             """;
         return jdbcTemplate.query(sql, (rs, rowNum) -> new EodRun(
             rs.getInt("account_id"),
             rs.getDate("business_date").toLocalDate(),
             rs.getString("status"),
-            rs.getTimestamp("created_at").toLocalDateTime()
+            rs.getTimestamp("started_at") != null ? 
+                rs.getTimestamp("started_at").toLocalDateTime() : null
         ));
     }
     
-    public record EodRun(int accountId, LocalDate businessDate, String status, LocalDateTime createdAt) {}
+    /**
+     * Get EOD history for an account.
+     */
+    public List<EodRun> getHistory(int accountId, int days) {
+        String sql = """
+            SELECT account_id, business_date, status, started_at, completed_at, position_count, error_message
+            FROM eod_runs 
+            WHERE account_id = ? AND business_date >= CURRENT_DATE - ?
+            ORDER BY business_date DESC
+            """;
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new EodRun(
+            rs.getInt("account_id"),
+            rs.getDate("business_date").toLocalDate(),
+            rs.getString("status"),
+            rs.getTimestamp("started_at") != null ? 
+                rs.getTimestamp("started_at").toLocalDateTime() : null,
+            rs.getTimestamp("completed_at") != null ? 
+                rs.getTimestamp("completed_at").toLocalDateTime() : null,
+            rs.getInt("position_count"),
+            rs.getString("error_message")
+        ), accountId, days);
+    }
+    
+    /**
+     * Reset EOD status for reprocessing.
+     */
+    @Transactional
+    public void resetStatus(int accountId, LocalDate businessDate) {
+        String sql = """
+            UPDATE eod_runs 
+            SET status = 'PENDING', 
+                started_at = NULL,
+                completed_at = NULL,
+                position_count = 0,
+                error_message = NULL
+            WHERE account_id = ? AND business_date = ?
+            """;
+        jdbcTemplate.update(sql, accountId, businessDate);
+    }
+    
+    /**
+     * Delete EOD run record.
+     */
+    @Transactional
+    public void delete(int accountId, LocalDate businessDate) {
+        String sql = "DELETE FROM eod_runs WHERE account_id = ? AND business_date = ?";
+        jdbcTemplate.update(sql, accountId, businessDate);
+    }
+    
+    /**
+     * EOD run record.
+     */
+    public record EodRun(
+        int accountId, 
+        LocalDate businessDate, 
+        String status, 
+        LocalDateTime startedAt
+    ) {
+        public EodRun(int accountId, LocalDate businessDate, String status, 
+                LocalDateTime startedAt, LocalDateTime completedAt, 
+                int positionCount, String errorMessage) {
+            this(accountId, businessDate, status, startedAt);
+        }
+    }
 }

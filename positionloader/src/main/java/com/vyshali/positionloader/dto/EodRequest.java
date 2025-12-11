@@ -1,57 +1,57 @@
 package com.vyshali.positionloader.dto;
 
-import jakarta.validation.constraints.NotNull;
 import java.time.LocalDate;
 
 /**
- * EOD Processing Request.
- * Used to trigger end-of-day position processing.
+ * EOD processing request.
  */
 public record EodRequest(
-    @NotNull(message = "Account ID is required")
-    Integer accountId,
-    
-    @NotNull(message = "Business date is required")
+    int accountId,
     LocalDate businessDate,
-    
     String source,
     boolean forceReprocess,
-    boolean lateArrival
+    boolean skipValidation
 ) {
     
     /**
-     * Compact constructor with defaults.
+     * Create a simple EOD request for today.
      */
-    public EodRequest {
-        if (businessDate == null) businessDate = LocalDate.now();
-        if (source == null) source = "KAFKA";
-    }
-    
-    /**
-     * Simple constructor for most common use case.
-     */
-    public static EodRequest of(Integer accountId) {
+    public static EodRequest of(int accountId) {
         return new EodRequest(accountId, LocalDate.now(), "KAFKA", false, false);
     }
     
     /**
-     * Constructor with specific date.
+     * Create an EOD request for a specific date.
      */
-    public static EodRequest of(Integer accountId, LocalDate businessDate) {
+    public static EodRequest of(int accountId, LocalDate businessDate) {
         return new EodRequest(accountId, businessDate, "KAFKA", false, false);
     }
     
     /**
-     * Create a late EOD request.
+     * Create an EOD request with source.
      */
-    public static EodRequest lateEod(Integer accountId, LocalDate businessDate) {
-        return new EodRequest(accountId, businessDate, "MANUAL", false, true);
+    public static EodRequest of(int accountId, LocalDate businessDate, String source) {
+        return new EodRequest(accountId, businessDate, source, false, false);
     }
     
     /**
-     * Create a force reprocess request.
+     * Create a forced reprocess request.
      */
-    public static EodRequest forceReprocess(Integer accountId, LocalDate businessDate) {
-        return new EodRequest(accountId, businessDate, "MANUAL", true, false);
+    public static EodRequest forceReprocess(int accountId, LocalDate businessDate) {
+        return new EodRequest(accountId, businessDate, "REPROCESS", true, false);
+    }
+    
+    /**
+     * Create a request that skips validation.
+     */
+    public EodRequest withSkipValidation() {
+        return new EodRequest(accountId, businessDate, source, forceReprocess, true);
+    }
+    
+    /**
+     * Create a request with force reprocess.
+     */
+    public EodRequest withForceReprocess() {
+        return new EodRequest(accountId, businessDate, source, true, skipValidation);
     }
 }
