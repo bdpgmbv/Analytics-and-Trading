@@ -1,151 +1,208 @@
 package com.vyshali.positionloader.service;
 
-import com.fxanalyzer.positionloader.dto.PositionDto;
-import com.fxanalyzer.positionloader.dto.EodRequest;
-import com.fxanalyzer.positionloader.dto.UploadResult;
-import com.fxanalyzer.positionloader.repository.PositionRepository;
+import com.vyshali.positionloader.dto.EodRequest;
+import com.vyshali.positionloader.dto.PositionDto;
+import com.vyshali.positionloader.repository.DataRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
- * Main position service - orchestrates position operations.
- * 
- * Delegates to specialized services:
- * - EodProcessingService: End-of-day processing
- * - IntradayProcessingService: Real-time position updates
- * - PositionValidationService: Position validation
- * - PositionUploadService: File upload handling
- * - MspmClientService: MSPM API integration
+ * Main service for position operations.
+ * Orchestrates position loading, retrieval, and management.
  */
 @Service
 public class PositionService {
     
     private static final Logger log = LoggerFactory.getLogger(PositionService.class);
     
-    private final PositionRepository positionRepository;
+    private final DataRepository dataRepository;
     private final EodProcessingService eodProcessingService;
-    private final IntradayProcessingService intradayProcessingService;
     private final PositionValidationService validationService;
-    private final PositionUploadService uploadService;
+    private final MeterRegistry meterRegistry;
     
     public PositionService(
-            PositionRepository positionRepository,
+            DataRepository dataRepository,
             EodProcessingService eodProcessingService,
-            IntradayProcessingService intradayProcessingService,
             PositionValidationService validationService,
-            PositionUploadService uploadService) {
-        this.positionRepository = positionRepository;
+            MeterRegistry meterRegistry) {
+        this.dataRepository = dataRepository;
         this.eodProcessingService = eodProcessingService;
-        this.intradayProcessingService = intradayProcessingService;
         this.validationService = validationService;
-        this.uploadService = uploadService;
+        this.meterRegistry = meterRegistry;
     }
     
-    // ═══════════════════════════════════════════════════════════════════════
-    // POSITION QUERIES
-    // ═══════════════════════════════════════════════════════════════════════
-    
     /**
-     * Get positions for an account on a specific date.
+     * Get positions for account and date.
      */
-    @Transactional(readOnly = true)
     public List<PositionDto> getPositions(int accountId, LocalDate businessDate) {
-        log.debug("Fetching positions for account {} on {}", accountId, businessDate);
-        return positionRepository.findByAccountAndDate(accountId, businessDate);
+        log.debug("Getting positions for account {} date {}", accountId, businessDate);
+        return dataRepository.findPositions(accountId, businessDate);
     }
     
     /**
-     * Get active positions (current batch) for an account.
+     * Get latest positions for account.
      */
-    @Transactional(readOnly = true)
-    public List<PositionDto> getActivePositions(int accountId) {
-        log.debug("Fetching active positions for account {}", accountId);
-        return positionRepository.findActiveByAccount(accountId);
+    public List<PositionDto> getLatestPositions(int accountId) {
+        log.debug("Getting latest positions for account {}", accountId);
+        return dataRepository.findLatestPositions(accountId);
     }
     
     /**
-     * Get position count for an account on a date.
+     * Process EOD request.
      */
-    @Transactional(readOnly = true)
-    public int getPositionCount(int accountId, LocalDate businessDate) {
-        return positionRepository.countByAccountAndDate(accountId, businessDate);
-    }
-    
-    // ═══════════════════════════════════════════════════════════════════════
-    // EOD PROCESSING (Delegated)
-    // ═══════════════════════════════════════════════════════════════════════
-    
-    /**
-     * Process end-of-day positions for an account.
-     */
-    public void processEod(EodRequest request) {
-        log.info("Processing EOD for account {} on {}", 
+    @Transactional
+    public EodProcessingService.EodResult processEod(EodRequest request) {
+        log.info("Processing EOD request for account {} date {}", 
             request.accountId(), request.businessDate());
-        eodProcessingService.processEod(request.accountId(), request.businessDate());
+        
+        if (request.forceReprocess()) {
+            return eodProcessingService.reprocessEod(
+                request.accountId(), request.businessDate());
+        }
+        
+        return eodProcessingService.processEod(
+            request.accountId(), request.businessDate());
     }
     
     /**
-     * Process late EOD (Phase 4 #21).
+     * Save positions for account.
      */
-    public void processLateEod(int accountId, LocalDate businessDate) {
-        log.info("Processing late EOD for account {} on {}", accountId, businessDate);
-        eodProcessingService.processLateEod(accountId, businessDate);
-    }
-    
-    /**
-     * Rollback a batch to previous version.
-     */
-    public void rollbackBatch(int accountId, int batchId) {
-        log.warn("Rolling back batch {} for account {}", batchId, accountId);
-        eodProcessingService.rollbackBatch(accountId, batchId);
-    }
-    
-    // ═══════════════════════════════════════════════════════════════════════
-    // INTRADAY PROCESSING (Delegated)
-    // ═══════════════════════════════════════════════════════════════════════
-    
-    /**
-     * Process intraday position update.
-     */
-    public void processIntradayUpdate(PositionDto position) {
-        intradayProcessingService.processUpdate(position);
-    }
-    
-    /**
-     * Process trade fill and update positions.
-     */
-    public void processTradeFill(String orderId, String symbol, String side, 
-            double quantity, double price) {
-        intradayProcessingService.processTradeFill(orderId, symbol, side, quantity, price);
-    }
-    
-    // ═══════════════════════════════════════════════════════════════════════
-    // UPLOAD PROCESSING (Delegated)
-    // ═══════════════════════════════════════════════════════════════════════
-    
-    /**
-     * Upload positions from file.
-     */
-    public UploadResult uploadPositions(int accountId, LocalDate businessDate, 
-            List<PositionDto> positions) {
-        log.info("Uploading {} positions for account {} on {}", 
+    @Transactional
+    public SaveResult savePositions(int accountId, LocalDate businessDate, 
+            List<PositionDto> positions, String source) {
+        log.info("Saving {} positions for account {} date {}", 
             positions.size(), accountId, businessDate);
-        return uploadService.uploadPositions(accountId, businessDate, positions);
+        
+        // Validate
+        var validationResult = validationService.validate(positions);
+        if (!validationResult.isValid()) {
+            log.warn("Validation failed for account {} date {}: {}", 
+                accountId, businessDate, validationResult.errors());
+            return SaveResult.validationFailed(validationResult.errors());
+        }
+        
+        // Create batch
+        int batchId = dataRepository.createBatch(accountId, businessDate, source);
+        
+        try {
+            // Delete existing positions
+            int deleted = dataRepository.deletePositions(accountId, businessDate);
+            if (deleted > 0) {
+                log.info("Deleted {} existing positions for account {} date {}", 
+                    deleted, accountId, businessDate);
+            }
+            
+            // Insert new positions
+            int inserted = dataRepository.savePositions(positions, batchId);
+            
+            // Complete batch
+            dataRepository.completeBatch(batchId, inserted);
+            
+            // Log audit
+            dataRepository.logAudit("POSITIONS_SAVED", accountId, businessDate,
+                String.format("Saved %d positions from %s", inserted, source));
+            
+            log.info("Saved {} positions for account {} date {} (batch {})", 
+                inserted, accountId, businessDate, batchId);
+            
+            return SaveResult.success(batchId, inserted);
+            
+        } catch (Exception e) {
+            log.error("Failed to save positions for account {} date {}", 
+                accountId, businessDate, e);
+            dataRepository.failBatch(batchId, e.getMessage());
+            return SaveResult.failed(e.getMessage());
+        }
     }
     
-    // ═══════════════════════════════════════════════════════════════════════
-    // VALIDATION (Delegated)
-    // ═══════════════════════════════════════════════════════════════════════
+    /**
+     * Delete positions for account and date.
+     */
+    @Transactional
+    public int deletePositions(int accountId, LocalDate businessDate) {
+        log.info("Deleting positions for account {} date {}", accountId, businessDate);
+        
+        int deleted = dataRepository.deletePositions(accountId, businessDate);
+        
+        dataRepository.logAudit("POSITIONS_DELETED", accountId, businessDate,
+            String.format("Deleted %d positions", deleted));
+        
+        return deleted;
+    }
     
     /**
-     * Validate positions before processing.
+     * Get position count for account and date.
      */
-    public List<String> validatePositions(List<PositionDto> positions) {
-        return validationService.validate(positions);
+    public int getPositionCount(int accountId, LocalDate businessDate) {
+        return dataRepository.positions().countByAccountAndDate(accountId, businessDate);
+    }
+    
+    /**
+     * Get total market value for account and date.
+     */
+    public BigDecimal getTotalMarketValue(int accountId, LocalDate businessDate) {
+        return dataRepository.positions().getTotalMarketValue(accountId, businessDate);
+    }
+    
+    /**
+     * Get positions grouped by product type.
+     */
+    public Map<String, List<PositionDto>> getPositionsByType(int accountId, LocalDate businessDate) {
+        List<PositionDto> positions = getPositions(accountId, businessDate);
+        return positions.stream()
+            .collect(Collectors.groupingBy(PositionDto::positionType));
+    }
+    
+    /**
+     * Check if EOD is complete.
+     */
+    public boolean isEodComplete(int accountId, LocalDate businessDate) {
+        return eodProcessingService.isEodComplete(accountId, businessDate);
+    }
+    
+    /**
+     * Get EOD status.
+     */
+    public String getEodStatus(int accountId, LocalDate businessDate) {
+        return eodProcessingService.getEodStatus(accountId, businessDate);
+    }
+    
+    /**
+     * Result of save operation.
+     */
+    public record SaveResult(
+        Status status,
+        int batchId,
+        int positionCount,
+        List<String> errors
+    ) {
+        public enum Status {
+            SUCCESS, VALIDATION_FAILED, FAILED
+        }
+        
+        public static SaveResult success(int batchId, int count) {
+            return new SaveResult(Status.SUCCESS, batchId, count, List.of());
+        }
+        
+        public static SaveResult validationFailed(List<String> errors) {
+            return new SaveResult(Status.VALIDATION_FAILED, -1, 0, errors);
+        }
+        
+        public static SaveResult failed(String error) {
+            return new SaveResult(Status.FAILED, -1, 0, List.of(error));
+        }
+        
+        public boolean isSuccess() {
+            return status == Status.SUCCESS;
+        }
     }
 }

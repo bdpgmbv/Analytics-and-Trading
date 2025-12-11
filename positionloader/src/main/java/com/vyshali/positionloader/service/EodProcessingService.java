@@ -1,13 +1,11 @@
 package com.vyshali.positionloader.service;
 
-import com.fxanalyzer.positionloader.config.AppConfig;
-import com.fxanalyzer.positionloader.config.LoaderProperties;
-import com.fxanalyzer.positionloader.dto.PositionDto;
-import com.fxanalyzer.positionloader.exception.DuplicateSnapshotException;
-import com.fxanalyzer.positionloader.exception.EodProcessingException;
-import com.fxanalyzer.positionloader.repository.BatchRepository;
-import com.fxanalyzer.positionloader.repository.EodRepository;
-import com.fxanalyzer.positionloader.repository.PositionRepository;
+import com.vyshali.positionloader.config.LoaderConfig;
+import com.vyshali.positionloader.dto.PositionDto;
+import com.vyshali.positionloader.exception.EodProcessingException;
+import com.vyshali.positionloader.repository.BatchRepository;
+import com.vyshali.positionloader.repository.EodRepository;
+import com.vyshali.positionloader.repository.PositionRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
@@ -16,18 +14,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
- * End-of-day position processing service.
- * 
- * Handles:
- * - EOD batch creation and activation (blue/green deployment)
- * - Duplicate detection (Phase 4 #19)
- * - Late EOD processing (Phase 4 #21)
- * - Holiday checks (Phase 4 #20)
- * - Batch rollback
+ * Service for End-of-Day position processing.
  */
 @Service
 public class EodProcessingService {
@@ -38,197 +31,193 @@ public class EodProcessingService {
     private final BatchRepository batchRepository;
     private final EodRepository eodRepository;
     private final MspmClientService mspmClient;
-    private final DuplicateDetectionService duplicateDetectionService;
-    private final HolidayService holidayService;
-    private final LoaderProperties loaderProperties;
-    private final MeterRegistry meterRegistry;
+    private final PositionValidationService validationService;
+    private final DuplicateDetectionService duplicateDetection;
+    private final LoaderConfig config;
+    private final ExecutorService executor;
+    private final Timer eodTimer;
     
     public EodProcessingService(
             PositionRepository positionRepository,
             BatchRepository batchRepository,
             EodRepository eodRepository,
             MspmClientService mspmClient,
-            DuplicateDetectionService duplicateDetectionService,
-            HolidayService holidayService,
-            LoaderProperties loaderProperties,
+            PositionValidationService validationService,
+            DuplicateDetectionService duplicateDetection,
+            LoaderConfig config,
             MeterRegistry meterRegistry) {
         this.positionRepository = positionRepository;
         this.batchRepository = batchRepository;
         this.eodRepository = eodRepository;
         this.mspmClient = mspmClient;
-        this.duplicateDetectionService = duplicateDetectionService;
-        this.holidayService = holidayService;
-        this.loaderProperties = loaderProperties;
-        this.meterRegistry = meterRegistry;
+        this.validationService = validationService;
+        this.duplicateDetection = duplicateDetection;
+        this.config = config;
+        this.executor = Executors.newFixedThreadPool(config.parallelThreads());
+        this.eodTimer = Timer.builder("eod.processing.time")
+            .description("EOD processing time")
+            .register(meterRegistry);
     }
     
     /**
-     * Process end-of-day positions for an account.
-     * 
-     * Steps:
-     * 1. Check idempotency (already processed?)
-     * 2. Check for holiday
-     * 3. Fetch positions from MSPM
-     * 4. Check for duplicates (Phase 4 #19)
-     * 5. Create staging batch
-     * 6. Insert positions
-     * 7. Activate batch (archive previous)
-     * 8. Update EOD run status
+     * Process EOD for an account.
      */
     @Transactional
-    public void processEod(int accountId, LocalDate businessDate) {
-        Timer.Sample timer = Timer.start(meterRegistry);
+    public EodResult processEod(int accountId, LocalDate businessDate) {
+        log.info("Starting EOD processing for account {} date {}", accountId, businessDate);
         
-        try {
-            // Idempotency check
-            if (eodRepository.isAlreadyCompleted(accountId, businessDate)) {
-                log.info("EOD already completed for account {} on {}", accountId, businessDate);
-                return;
+        return eodTimer.record(() -> {
+            try {
+                // Check if already processed
+                if (eodRepository.isComplete(accountId, businessDate)) {
+                    log.info("EOD already complete for account {} date {}", accountId, businessDate);
+                    return EodResult.alreadyProcessed(accountId, businessDate);
+                }
+                
+                // Update status to processing
+                eodRepository.updateStatus(accountId, businessDate, "PROCESSING");
+                
+                // Fetch positions from MSPM
+                List<PositionDto> positions = mspmClient.fetchPositions(accountId, businessDate);
+                
+                if (positions.isEmpty()) {
+                    log.warn("No positions returned from MSPM for account {} date {}", 
+                        accountId, businessDate);
+                    eodRepository.updateStatus(accountId, businessDate, "NO_DATA");
+                    return EodResult.noData(accountId, businessDate);
+                }
+                
+                // Check for duplicates if enabled
+                if (config.features().duplicateDetectionEnabled()) {
+                    if (duplicateDetection.isDuplicate(accountId, businessDate, positions)) {
+                        log.info("Duplicate snapshot detected for account {} date {}", 
+                            accountId, businessDate);
+                        eodRepository.updateStatus(accountId, businessDate, "DUPLICATE");
+                        return EodResult.duplicate(accountId, businessDate);
+                    }
+                }
+                
+                // Validate positions
+                var validationResult = validationService.validate(positions);
+                if (!validationResult.isValid()) {
+                    log.error("Validation failed for account {} date {}: {}", 
+                        accountId, businessDate, validationResult.errors());
+                    eodRepository.updateStatus(accountId, businessDate, "VALIDATION_FAILED");
+                    return EodResult.validationFailed(accountId, businessDate, validationResult.errors());
+                }
+                
+                // Create batch
+                int batchId = batchRepository.createBatch(accountId, businessDate, "EOD");
+                
+                // Delete existing positions for this date
+                positionRepository.deleteByAccountAndDate(accountId, businessDate);
+                
+                // Insert new positions
+                int inserted = positionRepository.batchInsert(positions, batchId);
+                
+                // Complete batch
+                batchRepository.completeBatch(batchId, inserted);
+                
+                // Store hash for duplicate detection
+                if (config.features().duplicateDetectionEnabled()) {
+                    duplicateDetection.storeHash(accountId, businessDate, positions);
+                }
+                
+                // Update EOD status
+                eodRepository.updateStatus(accountId, businessDate, "COMPLETE");
+                
+                log.info("EOD complete for account {} date {}: {} positions", 
+                    accountId, businessDate, inserted);
+                
+                return EodResult.success(accountId, businessDate, batchId, inserted);
+                
+            } catch (Exception e) {
+                log.error("EOD processing failed for account {} date {}", 
+                    accountId, businessDate, e);
+                eodRepository.updateStatus(accountId, businessDate, "FAILED");
+                throw new EodProcessingException(
+                    "EOD processing failed: " + e.getMessage(), accountId, businessDate, e);
             }
-            
-            // Holiday check (Phase 4 #20)
-            if (holidayService.isHoliday(businessDate)) {
-                log.info("Skipping EOD for account {} - {} is a holiday", accountId, businessDate);
-                eodRepository.updateStatus(accountId, businessDate, AppConfig.EOD_STATUS_SKIPPED);
-                return;
-            }
-            
-            // Mark as in progress
-            eodRepository.createOrUpdate(accountId, businessDate, AppConfig.EOD_STATUS_IN_PROGRESS);
-            
-            // Fetch positions from MSPM
-            List<PositionDto> positions = mspmClient.fetchPositions(accountId, businessDate);
-            log.info("Fetched {} positions from MSPM for account {}", positions.size(), accountId);
-            
-            // Duplicate detection (Phase 4 #19)
-            if (loaderProperties.featureFlags().duplicateDetectionEnabled()) {
-                checkForDuplicates(accountId, businessDate, positions);
-            }
-            
-            // Create new batch
-            int newBatchId = batchRepository.getNextBatchId(accountId);
-            batchRepository.createBatch(accountId, newBatchId, businessDate, AppConfig.BATCH_STATUS_STAGING);
-            
-            // Insert positions in batches
-            int batchSize = loaderProperties.batchSize();
-            for (int i = 0; i < positions.size(); i += batchSize) {
-                List<PositionDto> batch = positions.subList(
-                    i, Math.min(i + batchSize, positions.size()));
-                positionRepository.insertBatch(batch, newBatchId);
-            }
-            
-            // Update position count
-            batchRepository.updatePositionCount(accountId, newBatchId, positions.size());
-            
-            // Activate new batch (archives previous)
-            activateBatch(accountId, newBatchId);
-            
-            // Mark EOD as completed
-            eodRepository.markCompleted(accountId, businessDate, positions.size());
-            
-            log.info("EOD completed for account {} on {} - {} positions loaded", 
-                accountId, businessDate, positions.size());
-            
-        } catch (DuplicateSnapshotException e) {
-            log.warn("Duplicate snapshot detected for account {} on {}: {}", 
-                accountId, businessDate, e.getMessage());
-            eodRepository.updateStatus(accountId, businessDate, AppConfig.EOD_STATUS_SKIPPED);
-            throw e;
-            
-        } catch (Exception e) {
-            log.error("EOD processing failed for account {} on {}", accountId, businessDate, e);
-            eodRepository.markFailed(accountId, businessDate, e.getMessage());
-            throw new EodProcessingException("EOD failed for account " + accountId, e);
-            
-        } finally {
-            timer.stop(meterRegistry.timer(AppConfig.METRIC_EOD_DURATION, 
-                "account", String.valueOf(accountId)));
-        }
+        });
     }
     
     /**
-     * Process late EOD for an account (Phase 4 #21).
-     * Used when EOD was missed due to holidays or system issues.
+     * Process EOD asynchronously.
+     */
+    public CompletableFuture<EodResult> processEodAsync(int accountId, LocalDate businessDate) {
+        return CompletableFuture.supplyAsync(
+            () -> processEod(accountId, businessDate), executor);
+    }
+    
+    /**
+     * Reprocess EOD (force).
      */
     @Transactional
-    public void processLateEod(int accountId, LocalDate businessDate) {
-        if (!loaderProperties.featureFlags().lateEodEnabled()) {
-            log.warn("Late EOD processing is disabled");
-            throw new EodProcessingException("Late EOD processing is disabled");
+    public EodResult reprocessEod(int accountId, LocalDate businessDate) {
+        log.info("Reprocessing EOD for account {} date {}", accountId, businessDate);
+        
+        // Reset status
+        eodRepository.updateStatus(accountId, businessDate, "PENDING");
+        
+        // Clear duplicate hash if exists
+        if (config.features().duplicateDetectionEnabled()) {
+            duplicateDetection.clearHash(accountId, businessDate);
         }
         
-        log.info("Processing late EOD for account {} on {}", accountId, businessDate);
-        
-        // Check if we're processing a date older than T-1
-        LocalDate today = LocalDate.now();
-        if (businessDate.isBefore(today.minusDays(5))) {
-            throw new EodProcessingException(
-                "Cannot process late EOD for dates older than 5 days: " + businessDate);
-        }
-        
-        // Process as normal EOD but with late flag for audit
-        processEod(accountId, businessDate);
+        return processEod(accountId, businessDate);
     }
     
     /**
-     * Rollback a batch to the previous version.
+     * Check if EOD is complete for account.
      */
-    @Transactional
-    public void rollbackBatch(int accountId, int batchId) {
-        log.warn("Rolling back batch {} for account {}", batchId, accountId);
-        
-        // Find previous batch
-        Integer previousBatchId = batchRepository.findPreviousActiveBatch(accountId, batchId);
-        if (previousBatchId == null) {
-            throw new EodProcessingException("No previous batch found to rollback to");
-        }
-        
-        // Deactivate current batch
-        batchRepository.updateStatus(accountId, batchId, AppConfig.BATCH_STATUS_ROLLED_BACK);
-        
-        // Reactivate previous batch
-        batchRepository.updateStatus(accountId, previousBatchId, AppConfig.BATCH_STATUS_ACTIVE);
-        batchRepository.setActivatedAt(accountId, previousBatchId, LocalDateTime.now());
-        
-        log.info("Rolled back account {} from batch {} to batch {}", 
-            accountId, batchId, previousBatchId);
+    public boolean isEodComplete(int accountId, LocalDate businessDate) {
+        return eodRepository.isComplete(accountId, businessDate);
     }
     
     /**
-     * Activate a staging batch (blue/green deployment).
+     * Get EOD status.
      */
-    private void activateBatch(int accountId, int newBatchId) {
-        // Archive current active batch
-        Integer currentActiveBatchId = batchRepository.findActiveBatch(accountId);
-        if (currentActiveBatchId != null) {
-            batchRepository.updateStatus(accountId, currentActiveBatchId, AppConfig.BATCH_STATUS_ARCHIVED);
-            batchRepository.setArchivedAt(accountId, currentActiveBatchId, LocalDateTime.now());
-        }
-        
-        // Activate new batch
-        batchRepository.updateStatus(accountId, newBatchId, AppConfig.BATCH_STATUS_ACTIVE);
-        batchRepository.setActivatedAt(accountId, newBatchId, LocalDateTime.now());
-        
-        log.debug("Activated batch {} for account {} (archived batch {})", 
-            newBatchId, accountId, currentActiveBatchId);
+    public String getEodStatus(int accountId, LocalDate businessDate) {
+        return eodRepository.getStatus(accountId, businessDate);
     }
     
     /**
-     * Check for duplicate positions using content hashing (Phase 4 #19).
+     * EOD processing result.
      */
-    private void checkForDuplicates(int accountId, LocalDate businessDate, 
-            List<PositionDto> positions) {
-        
-        String contentHash = duplicateDetectionService.computeHash(positions);
-        
-        if (duplicateDetectionService.isDuplicate(accountId, businessDate, contentHash)) {
-            throw new DuplicateSnapshotException(
-                "Duplicate position snapshot detected for account " + accountId + 
-                " on " + businessDate);
+    public record EodResult(
+        int accountId,
+        LocalDate businessDate,
+        Status status,
+        int batchId,
+        int positionCount,
+        List<String> errors
+    ) {
+        public enum Status {
+            SUCCESS, ALREADY_PROCESSED, NO_DATA, DUPLICATE, VALIDATION_FAILED, FAILED
         }
         
-        // Store hash for future comparisons
-        duplicateDetectionService.storeHash(accountId, businessDate, contentHash, 
-            positions.size());
+        public static EodResult success(int accountId, LocalDate date, int batchId, int count) {
+            return new EodResult(accountId, date, Status.SUCCESS, batchId, count, List.of());
+        }
+        
+        public static EodResult alreadyProcessed(int accountId, LocalDate date) {
+            return new EodResult(accountId, date, Status.ALREADY_PROCESSED, -1, 0, List.of());
+        }
+        
+        public static EodResult noData(int accountId, LocalDate date) {
+            return new EodResult(accountId, date, Status.NO_DATA, -1, 0, List.of());
+        }
+        
+        public static EodResult duplicate(int accountId, LocalDate date) {
+            return new EodResult(accountId, date, Status.DUPLICATE, -1, 0, List.of());
+        }
+        
+        public static EodResult validationFailed(int accountId, LocalDate date, List<String> errors) {
+            return new EodResult(accountId, date, Status.VALIDATION_FAILED, -1, 0, errors);
+        }
+        
+        public boolean isSuccess() {
+            return status == Status.SUCCESS;
+        }
     }
 }

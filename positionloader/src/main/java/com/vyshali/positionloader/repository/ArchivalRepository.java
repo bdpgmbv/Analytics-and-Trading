@@ -1,6 +1,7 @@
 package com.vyshali.positionloader.repository;
 
-import com.fxanalyzer.positionloader.service.ArchivalService.ArchivalStats;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -8,10 +9,12 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 
 /**
- * Repository for position archival operations.
+ * Repository for position archival operations (Phase 4 #22).
  */
 @Repository
 public class ArchivalRepository {
+    
+    private static final Logger log = LoggerFactory.getLogger(ArchivalRepository.class);
     
     private final JdbcTemplate jdbcTemplate;
     
@@ -20,97 +23,136 @@ public class ArchivalRepository {
     }
     
     /**
-     * Archive a batch of positions older than cutoff date.
+     * Archive positions older than specified date.
+     * Moves from Account_Positions to Account_Positions_Archive.
      */
     @Transactional
-    public int archiveBatch(LocalDate cutoffDate, int batchSize) {
-        String sql = """
-            WITH archived AS (
-                DELETE FROM positions 
-                WHERE position_id IN (
-                    SELECT position_id FROM positions 
-                    WHERE business_date < ? 
-                    AND system_to = '9999-12-31 23:59:59'
-                    LIMIT ?
-                )
-                RETURNING position_id, account_id, product_id, business_date, 
-                    quantity, price, currency, market_value_local, market_value_base,
-                    batch_id, source
-            )
-            INSERT INTO positions_archive (
-                original_position_id, account_id, product_id, business_date,
-                quantity, price, currency, market_value_local, market_value_base,
-                batch_id, source, archive_reason
-            )
-            SELECT position_id, account_id, product_id, business_date,
-                quantity, price, currency, market_value_local, market_value_base,
-                batch_id, source, 'RETENTION_POLICY'
-            FROM archived
+    public int archivePositions(LocalDate olderThan) {
+        log.info("Archiving positions older than {}", olderThan);
+        
+        // Insert into archive table
+        String insertSql = """
+            INSERT INTO account_positions_archive 
+            SELECT * FROM account_positions 
+            WHERE business_date < ? 
+            AND position_id NOT IN (SELECT position_id FROM account_positions_archive)
             """;
-        return jdbcTemplate.update(sql, cutoffDate, batchSize);
+        int inserted = jdbcTemplate.update(insertSql, olderThan);
+        
+        // Delete from main table
+        String deleteSql = """
+            DELETE FROM account_positions 
+            WHERE business_date < ? 
+            AND position_id IN (SELECT position_id FROM account_positions_archive)
+            """;
+        int deleted = jdbcTemplate.update(deleteSql, olderThan);
+        
+        log.info("Archived {} positions (inserted: {}, deleted: {})", deleted, inserted, deleted);
+        return deleted;
     }
     
     /**
-     * Archive positions for a specific account.
+     * Archive positions for specific account.
      */
     @Transactional
-    public int archiveByAccount(int accountId, LocalDate olderThan) {
-        String sql = """
-            WITH archived AS (
-                DELETE FROM positions 
-                WHERE account_id = ? AND business_date < ?
-                RETURNING position_id, account_id, product_id, business_date,
-                    quantity, price, currency, market_value_local, market_value_base,
-                    batch_id, source
-            )
-            INSERT INTO positions_archive (
-                original_position_id, account_id, product_id, business_date,
-                quantity, price, currency, market_value_local, market_value_base,
-                batch_id, source, archive_reason
-            )
-            SELECT position_id, account_id, product_id, business_date,
-                quantity, price, currency, market_value_local, market_value_base,
-                batch_id, source, 'MANUAL_ARCHIVAL'
-            FROM archived
+    public int archiveAccountPositions(int accountId, LocalDate olderThan) {
+        log.info("Archiving positions for account {} older than {}", accountId, olderThan);
+        
+        String insertSql = """
+            INSERT INTO account_positions_archive 
+            SELECT * FROM account_positions 
+            WHERE account_id = ? AND business_date < ?
+            AND position_id NOT IN (SELECT position_id FROM account_positions_archive)
             """;
-        return jdbcTemplate.update(sql, accountId, olderThan);
+        int inserted = jdbcTemplate.update(insertSql, accountId, olderThan);
+        
+        String deleteSql = """
+            DELETE FROM account_positions 
+            WHERE account_id = ? AND business_date < ?
+            AND position_id IN (SELECT position_id FROM account_positions_archive)
+            """;
+        int deleted = jdbcTemplate.update(deleteSql, accountId, olderThan);
+        
+        return deleted;
     }
     
     /**
-     * Purge old archived positions.
+     * Get count of archived positions.
+     */
+    public long getArchiveCount() {
+        String sql = "SELECT COUNT(*) FROM account_positions_archive";
+        Long count = jdbcTemplate.queryForObject(sql, Long.class);
+        return count != null ? count : 0;
+    }
+    
+    /**
+     * Get archive count for account.
+     */
+    public long getArchiveCount(int accountId) {
+        String sql = "SELECT COUNT(*) FROM account_positions_archive WHERE account_id = ?";
+        Long count = jdbcTemplate.queryForObject(sql, Long.class, accountId);
+        return count != null ? count : 0;
+    }
+    
+    /**
+     * Restore positions from archive.
      */
     @Transactional
-    public int purgeArchived(LocalDate olderThan) {
-        String sql = "DELETE FROM positions_archive WHERE archived_at < ?";
+    public int restorePositions(int accountId, LocalDate businessDate) {
+        log.info("Restoring archived positions for account {} date {}", accountId, businessDate);
+        
+        String insertSql = """
+            INSERT INTO account_positions 
+            SELECT * FROM account_positions_archive 
+            WHERE account_id = ? AND business_date = ?
+            AND position_id NOT IN (SELECT position_id FROM account_positions)
+            """;
+        int restored = jdbcTemplate.update(insertSql, accountId, businessDate);
+        
+        String deleteSql = """
+            DELETE FROM account_positions_archive 
+            WHERE account_id = ? AND business_date = ?
+            AND position_id IN (SELECT position_id FROM account_positions)
+            """;
+        jdbcTemplate.update(deleteSql, accountId, businessDate);
+        
+        return restored;
+    }
+    
+    /**
+     * Purge old archived data.
+     */
+    @Transactional
+    public int purgeArchive(LocalDate olderThan) {
+        log.info("Purging archive older than {}", olderThan);
+        String sql = "DELETE FROM account_positions_archive WHERE business_date < ?";
         return jdbcTemplate.update(sql, olderThan);
     }
     
     /**
-     * Get archival statistics.
+     * Get archive date range.
      */
-    public ArchivalStats getStats() {
+    public ArchiveDateRange getArchiveDateRange() {
         String sql = """
-            SELECT 
-                COUNT(*) as total,
-                MIN(business_date) as oldest,
-                MAX(business_date) as newest,
-                pg_total_relation_size('positions_archive') as size_bytes
-            FROM positions_archive
+            SELECT MIN(business_date) as min_date, MAX(business_date) as max_date 
+            FROM account_positions_archive
             """;
-        return jdbcTemplate.queryForObject(sql, (rs, rowNum) -> new ArchivalStats(
-            rs.getLong("total"),
-            rs.getDate("oldest") != null ? rs.getDate("oldest").toLocalDate() : null,
-            rs.getDate("newest") != null ? rs.getDate("newest").toLocalDate() : null,
-            rs.getLong("size_bytes")
-        ));
+        return jdbcTemplate.query(sql, rs -> {
+            if (rs.next()) {
+                LocalDate minDate = rs.getObject("min_date", LocalDate.class);
+                LocalDate maxDate = rs.getObject("max_date", LocalDate.class);
+                return new ArchiveDateRange(minDate, maxDate);
+            }
+            return new ArchiveDateRange(null, null);
+        });
     }
     
     /**
-     * Count archived positions for an account.
+     * Archive date range record.
      */
-    public long countByAccount(int accountId) {
-        String sql = "SELECT COUNT(*) FROM positions_archive WHERE account_id = ?";
-        Long count = jdbcTemplate.queryForObject(sql, Long.class, accountId);
-        return count != null ? count : 0;
+    public record ArchiveDateRange(LocalDate minDate, LocalDate maxDate) {
+        public boolean isEmpty() {
+            return minDate == null || maxDate == null;
+        }
     }
 }

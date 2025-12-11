@@ -1,104 +1,103 @@
 package com.vyshali.positionloader.repository;
 
-import com.fxanalyzer.positionloader.dto.PositionDto;
+import com.vyshali.positionloader.dto.PositionDto;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.List;
 
 /**
- * Repository for position operations.
+ * Repository for Account_Positions table operations.
  */
 @Repository
 public class PositionRepository {
     
+    private static final Logger log = LoggerFactory.getLogger(PositionRepository.class);
+    
     private final JdbcTemplate jdbcTemplate;
+    private final PositionRowMapper rowMapper = new PositionRowMapper();
     
     public PositionRepository(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
     }
-    
-    private static final RowMapper<PositionDto> POSITION_MAPPER = (rs, rowNum) -> 
-        new PositionDto(
-            rs.getLong("position_id"),
-            rs.getInt("account_id"),
-            rs.getInt("product_id"),
-            rs.getDate("business_date").toLocalDate(),
-            rs.getBigDecimal("quantity"),
-            rs.getBigDecimal("price"),
-            rs.getString("currency"),
-            rs.getBigDecimal("market_value_local"),
-            rs.getBigDecimal("market_value_base"),
-            rs.getBigDecimal("avg_cost_price"),
-            rs.getBigDecimal("cost_local"),
-            rs.getInt("batch_id"),
-            rs.getString("source"),
-            rs.getString("position_type"),
-            rs.getBoolean("is_excluded")
-        );
     
     /**
      * Find positions by account and date.
      */
     public List<PositionDto> findByAccountAndDate(int accountId, LocalDate businessDate) {
         String sql = """
-            SELECT * FROM positions 
-            WHERE account_id = ? AND business_date = ? 
-            AND is_excluded = FALSE
-            AND system_to = '9999-12-31 23:59:59'
+            SELECT position_id, account_id, product_id, business_date, quantity, price, 
+                   currency, market_value_local, market_value_base, avg_cost_price, 
+                   cost_local, batch_id, source, position_type, is_excluded
+            FROM account_positions 
+            WHERE account_id = ? AND business_date = ?
             ORDER BY product_id
             """;
-        return jdbcTemplate.query(sql, POSITION_MAPPER, accountId, businessDate);
+        return jdbcTemplate.query(sql, rowMapper, accountId, businessDate);
     }
     
     /**
-     * Find active positions (current batch) for account.
+     * Find latest positions for account.
      */
-    public List<PositionDto> findActiveByAccount(int accountId) {
+    public List<PositionDto> findLatestByAccount(int accountId) {
         String sql = """
-            SELECT p.* FROM positions p
-            JOIN account_batches ab ON p.account_id = ab.account_id AND p.batch_id = ab.batch_id
-            WHERE p.account_id = ? 
-            AND ab.status = 'ACTIVE'
-            AND p.is_excluded = FALSE
-            ORDER BY p.product_id
+            SELECT position_id, account_id, product_id, business_date, quantity, price, 
+                   currency, market_value_local, market_value_base, avg_cost_price, 
+                   cost_local, batch_id, source, position_type, is_excluded
+            FROM account_positions 
+            WHERE account_id = ? 
+            AND business_date = (
+                SELECT MAX(business_date) FROM account_positions WHERE account_id = ?
+            )
+            ORDER BY product_id
             """;
-        return jdbcTemplate.query(sql, POSITION_MAPPER, accountId);
+        return jdbcTemplate.query(sql, rowMapper, accountId, accountId);
     }
     
     /**
-     * Count positions for account on date.
+     * Find positions by batch ID.
      */
-    public int countByAccountAndDate(int accountId, LocalDate businessDate) {
+    public List<PositionDto> findByBatch(int batchId) {
         String sql = """
-            SELECT COUNT(*) FROM positions 
-            WHERE account_id = ? AND business_date = ? AND is_excluded = FALSE
+            SELECT position_id, account_id, product_id, business_date, quantity, price, 
+                   currency, market_value_local, market_value_base, avg_cost_price, 
+                   cost_local, batch_id, source, position_type, is_excluded
+            FROM account_positions 
+            WHERE batch_id = ?
+            ORDER BY product_id
             """;
-        Integer count = jdbcTemplate.queryForObject(sql, Integer.class, accountId, businessDate);
-        return count != null ? count : 0;
+        return jdbcTemplate.query(sql, rowMapper, batchId);
     }
     
     /**
-     * Insert a batch of positions.
+     * Batch insert positions.
      */
     @Transactional
-    public void insertBatch(List<PositionDto> positions, int batchId) {
+    public int batchInsert(List<PositionDto> positions, int batchId) {
+        if (positions == null || positions.isEmpty()) {
+            return 0;
+        }
+        
         String sql = """
-            INSERT INTO positions (
+            INSERT INTO account_positions (
                 account_id, product_id, business_date, quantity, price, currency,
                 market_value_local, market_value_base, avg_cost_price, cost_local,
                 batch_id, source, position_type, is_excluded
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
         
-        jdbcTemplate.batchUpdate(sql, positions, 1000, (ps, position) -> {
+        int[][] results = jdbcTemplate.batchUpdate(sql, positions, 1000, (ps, position) -> {
             ps.setInt(1, position.accountId());
             ps.setInt(2, position.productId());
-            ps.setDate(3, java.sql.Date.valueOf(position.businessDate()));
+            ps.setObject(3, position.businessDate());
             ps.setBigDecimal(4, position.quantity());
             ps.setBigDecimal(5, position.price());
             ps.setString(6, position.currency());
@@ -111,75 +110,97 @@ public class PositionRepository {
             ps.setString(13, position.positionType());
             ps.setBoolean(14, position.isExcluded());
         });
-    }
-    
-    /**
-     * Upsert a single position.
-     */
-    @Transactional
-    public void upsertPosition(PositionDto position) {
-        String sql = """
-            INSERT INTO positions (
-                account_id, product_id, business_date, quantity, price, currency,
-                market_value_local, market_value_base, batch_id, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (account_id, product_id, business_date) 
-            DO UPDATE SET 
-                quantity = EXCLUDED.quantity,
-                price = EXCLUDED.price,
-                market_value_local = EXCLUDED.market_value_local,
-                market_value_base = EXCLUDED.market_value_base,
-                updated_at = CURRENT_TIMESTAMP
-            """;
         
-        jdbcTemplate.update(sql,
-            position.accountId(),
-            position.productId(),
-            position.businessDate(),
-            position.quantity(),
-            position.price(),
-            position.currency(),
-            position.marketValueLocal(),
-            position.marketValueBase(),
-            position.batchId(),
-            position.source()
-        );
-    }
-    
-    /**
-     * Update position quantity (for trade fills).
-     */
-    @Transactional
-    public void updateQuantity(int accountId, int productId, LocalDate businessDate,
-            BigDecimal quantityDelta, BigDecimal price) {
-        String sql = """
-            UPDATE positions SET 
-                quantity = quantity + ?,
-                price = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE account_id = ? AND product_id = ? AND business_date = ?
-            """;
-        
-        int updated = jdbcTemplate.update(sql, quantityDelta, price, 
-            accountId, productId, businessDate);
-        
-        // If no row exists, insert new position
-        if (updated == 0) {
-            String insertSql = """
-                INSERT INTO positions (account_id, product_id, business_date, quantity, price, source)
-                VALUES (?, ?, ?, ?, ?, 'TRADE_FILL')
-                """;
-            jdbcTemplate.update(insertSql, accountId, productId, businessDate, 
-                quantityDelta, price);
+        int totalInserted = 0;
+        for (int[] batch : results) {
+            for (int count : batch) {
+                if (count > 0) totalInserted += count;
+            }
         }
+        
+        log.info("Inserted {} positions for batch {}", totalInserted, batchId);
+        return totalInserted;
     }
     
     /**
-     * Delete positions for a batch (for rollback).
+     * Delete positions by account and date.
      */
     @Transactional
-    public int deleteByBatch(int accountId, int batchId) {
-        String sql = "DELETE FROM positions WHERE account_id = ? AND batch_id = ?";
-        return jdbcTemplate.update(sql, accountId, batchId);
+    public int deleteByAccountAndDate(int accountId, LocalDate businessDate) {
+        String sql = "DELETE FROM account_positions WHERE account_id = ? AND business_date = ?";
+        int deleted = jdbcTemplate.update(sql, accountId, businessDate);
+        log.info("Deleted {} positions for account {} date {}", deleted, accountId, businessDate);
+        return deleted;
+    }
+    
+    /**
+     * Delete positions by batch ID.
+     */
+    @Transactional
+    public int deleteByBatch(int batchId) {
+        String sql = "DELETE FROM account_positions WHERE batch_id = ?";
+        return jdbcTemplate.update(sql, batchId);
+    }
+    
+    /**
+     * Count positions for account and date.
+     */
+    public int countByAccountAndDate(int accountId, LocalDate businessDate) {
+        String sql = "SELECT COUNT(*) FROM account_positions WHERE account_id = ? AND business_date = ?";
+        Integer count = jdbcTemplate.queryForObject(sql, Integer.class, accountId, businessDate);
+        return count != null ? count : 0;
+    }
+    
+    /**
+     * Check if positions exist for account and date.
+     */
+    public boolean existsByAccountAndDate(int accountId, LocalDate businessDate) {
+        return countByAccountAndDate(accountId, businessDate) > 0;
+    }
+    
+    /**
+     * Get latest business date for account.
+     */
+    public LocalDate getLatestBusinessDate(int accountId) {
+        String sql = "SELECT MAX(business_date) FROM account_positions WHERE account_id = ?";
+        return jdbcTemplate.queryForObject(sql, LocalDate.class, accountId);
+    }
+    
+    /**
+     * Get total market value for account and date.
+     */
+    public BigDecimal getTotalMarketValue(int accountId, LocalDate businessDate) {
+        String sql = """
+            SELECT COALESCE(SUM(market_value_base), 0) 
+            FROM account_positions 
+            WHERE account_id = ? AND business_date = ? AND NOT is_excluded
+            """;
+        return jdbcTemplate.queryForObject(sql, BigDecimal.class, accountId, businessDate);
+    }
+    
+    /**
+     * Row mapper for PositionDto.
+     */
+    private static class PositionRowMapper implements RowMapper<PositionDto> {
+        @Override
+        public PositionDto mapRow(ResultSet rs, int rowNum) throws SQLException {
+            return new PositionDto(
+                rs.getLong("position_id"),
+                rs.getInt("account_id"),
+                rs.getInt("product_id"),
+                rs.getObject("business_date", LocalDate.class),
+                rs.getBigDecimal("quantity"),
+                rs.getBigDecimal("price"),
+                rs.getString("currency"),
+                rs.getBigDecimal("market_value_local"),
+                rs.getBigDecimal("market_value_base"),
+                rs.getBigDecimal("avg_cost_price"),
+                rs.getBigDecimal("cost_local"),
+                rs.getInt("batch_id"),
+                rs.getString("source"),
+                rs.getString("position_type"),
+                rs.getBoolean("is_excluded")
+            );
+        }
     }
 }
