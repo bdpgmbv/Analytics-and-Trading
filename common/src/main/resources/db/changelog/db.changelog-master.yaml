@@ -1,4 +1,41 @@
 databaseChangeLog:
-  # Single consolidated schema file for entire FX Analyzer platform
+  # ═══════════════════════════════════════════════════════════════════════════
+  # FX ANALYZER PLATFORM - LIQUIBASE CHANGELOG MASTER
+  # Split into logical changesets for incremental migrations
+  # ═══════════════════════════════════════════════════════════════════════════
+
   - include:
-      file: db/changelog/fxanalyzer-complete-schema.sql
+      file: changes/001-core-reference-tables.sql
+      relativeToChangelogFile: true
+
+  - include:
+      file: changes/002-positions-tables.sql
+      relativeToChangelogFile: true
+
+  - include:
+      file: changes/003-trading-tables.sql
+      relativeToChangelogFile: true
+
+  - include:
+      file: changes/004-pricing-tables.sql
+      relativeToChangelogFile: true
+
+  - include:
+      file: changes/005-eod-batch-tables.sql
+      relativeToChangelogFile: true
+
+  - include:
+      file: changes/006-infrastructure-tables.sql
+      relativeToChangelogFile: true
+
+  - include:
+      file: changes/007-phase4-features.sql
+      relativeToChangelogFile: true
+
+  - include:
+      file: changes/008-views.sql
+      relativeToChangelogFile: true
+
+  - include:
+      file: changes/009-seed-data.sql
+      relativeToChangelogFile: true
