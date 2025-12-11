@@ -76,7 +76,39 @@ CREATE TABLE IF NOT EXISTS Audit_Logs (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Hedge Valuations (100% hedge value per account per day)
+CREATE TABLE IF NOT EXISTS hedge_valuations (
+    account_id INT NOT NULL,
+    business_date DATE NOT NULL,
+    valuation DECIMAL(18,2) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP,
+    PRIMARY KEY (account_id, business_date)
+);
+
 -- Test data
 INSERT INTO Clients (client_id, client_name) VALUES (100, 'Test Client') ON CONFLICT DO NOTHING;
 INSERT INTO Funds (fund_id, client_id, fund_name, base_currency) VALUES (200, 100, 'Test Fund', 'USD') ON CONFLICT DO NOTHING;
 INSERT INTO Accounts (account_id, client_id, fund_id, base_currency, account_number) VALUES (1001, 100, 200, 'USD', 'ACC-1001') ON CONFLICT DO NOTHING;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- PERFORMANCE INDEXES (Critical for production)
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE INDEX IF NOT EXISTS idx_positions_account_date ON positions(account_id, business_date);
+CREATE INDEX IF NOT EXISTS idx_eod_status_client_date ON eod_daily_status(client_id, business_date, status);
+CREATE INDEX IF NOT EXISTS idx_eod_runs_account_date ON eod_runs(account_id, business_date);
+CREATE INDEX IF NOT EXISTS idx_audit_entity_date ON audit_logs(entity_id, created_at DESC);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DEAD LETTER QUEUE (for failed messages)
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS dlq (
+    id BIGSERIAL PRIMARY KEY,
+    topic VARCHAR(100) NOT NULL,
+    message_key VARCHAR(100),
+    payload TEXT,
+    error_message TEXT,
+    retry_count INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    last_retry_at TIMESTAMP
+);

@@ -31,6 +31,7 @@ import java.util.concurrent.TimeUnit;
  */
 @Configuration
 @EnableCaching
+@org.springframework.scheduling.annotation.EnableScheduling
 public class AppConfig {
 
     // ═══════════════════════════════════════════════════════════════════════════

@@ -1,10 +1,5 @@
 package com.vyshali.positionloader.service;
 
-/*
- * 12/11/2025 - 11:46 AM
- * @author Vyshali Prabananth Lal
- */
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vyshali.positionloader.config.AppConfig;
 import com.vyshali.positionloader.dto.Dto;
@@ -40,12 +35,19 @@ public class PositionService {
     private final MeterRegistry metrics;
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // EOD PROCESSING
+    // EOD PROCESSING (with idempotency)
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Transactional
     public void processEod(Integer accountId) {
         LocalDate today = LocalDate.now();
+
+        // IDEMPOTENCY CHECK: Skip if already completed
+        if (repo.isEodCompleted(accountId, today)) {
+            log.info("EOD already completed for account {}, skipping", accountId);
+            return;
+        }
+
         log.info("Starting EOD for account {}", accountId);
 
         try {
@@ -71,6 +73,17 @@ public class PositionService {
             // Complete
             repo.recordEodComplete(accountId, today, count);
             repo.markAccountComplete(accountId, snapshot.clientId(), today);
+
+            // Calculate and save hedge valuation (100%)
+            java.math.BigDecimal hedgeValue = repo.getHedgeValuation(accountId, today);
+            repo.saveHedgeValuation(accountId, today, hedgeValue);
+            log.debug("Hedge valuation for account {}: {}", accountId, hedgeValue);
+
+            // Check if all client accounts complete, publish sign-off
+            if (repo.isClientComplete(snapshot.clientId(), today)) {
+                publishEvent("CLIENT_SIGNOFF", accountId, snapshot.clientId(), repo.countClientAccounts(snapshot.clientId()));
+                log.info("Client {} sign-off complete", snapshot.clientId());
+            }
 
             // Publish event
             publishEvent("EOD_COMPLETE", accountId, snapshot.clientId(), count);
