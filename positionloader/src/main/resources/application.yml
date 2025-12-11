@@ -1,418 +1,96 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# POSITION LOADER - COMPLETE APPLICATION CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-# Version: Final (includes all AMPLIFY + SIMPLIFY changes)
-# Last Updated: December 2024
-# ═══════════════════════════════════════════════════════════════════════════════
-
 spring:
   application:
     name: positionloader
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # GRACEFUL SHUTDOWN
-  # ─────────────────────────────────────────────────────────────────────────────
+  # Database
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:fxan}
+    username: ${DB_USER:fxan_user}
+    password: ${DB_PASS:fxan_pass}
+    hikari:
+      maximum-pool-size: 20
+
+  # Kafka
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
+    producer:
+      acks: all
+
+  # Graceful shutdown
   lifecycle:
     timeout-per-shutdown-phase: 30s
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # DATABASE (PostgreSQL)
-  # ─────────────────────────────────────────────────────────────────────────────
-  datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:fxan}
-    username: ${DB_USERNAME:fxan_user}
-    password: ${DB_PASSWORD:fxan_pass}
-    driver-class-name: org.postgresql.Driver
-    hikari:
-      pool-name: positionloader-pool
-      minimum-idle: 5
-      maximum-pool-size: 20
-      idle-timeout: 300000
-      max-lifetime: 1200000
-      connection-timeout: 30000
-      leak-detection-threshold: 60000
-
-  jpa:
-    hibernate:
-      ddl-auto: validate
-    open-in-view: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: false
-        jdbc:
-          batch_size: 50
-        order_inserts: true
-        order_updates: true
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # KAFKA
-  # ─────────────────────────────────────────────────────────────────────────────
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    consumer:
-      auto-offset-reset: earliest
-      enable-auto-commit: false
-      max-poll-records: ${KAFKA_MAX_POLL_RECORDS:100}
-      properties:
-        spring.json.trusted.packages: com.vyshali.positionloader.dto
-    producer:
-      acks: all
-      retries: 3
-      properties:
-        enable.idempotence: true
-        max.in.flight.requests.per.connection: 5
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # REDIS (for caching and idempotency)
-  # ─────────────────────────────────────────────────────────────────────────────
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
-      timeout: 5s
-      lettuce:
-        pool:
-          max-active: 10
-          max-idle: 5
-          min-idle: 2
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # CACHE
-  # ─────────────────────────────────────────────────────────────────────────────
-  cache:
-    type: redis
-    redis:
-      time-to-live: 3600000  # 1 hour default
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SERVER CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
+# Server
 server:
-  port: ${SERVER_PORT:8080}
+  port: ${PORT:8080}
   shutdown: graceful
-  tomcat:
-    max-threads: 200
-    accept-count: 100
-    connection-timeout: 20000
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MSPM CLIENT CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
+# MSPM Client
 mspm:
-  base-url: ${MSPM_BASE_URL:http://mspm-service:8080}
-  timeout: ${MSPM_TIMEOUT:30s}
-  connect-timeout: ${MSPM_CONNECT_TIMEOUT:10s}
-  health-check-timeout: ${MSPM_HEALTH_TIMEOUT:5s}
+  base-url: ${MSPM_URL:http://localhost:8080}
+  timeout: 30
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# RESILIENCE4J (Retry & Circuit Breaker)
-# ═══════════════════════════════════════════════════════════════════════════════
+# Resilience4j
 resilience4j:
-  # ─────────────────────────────────────────────────────────────────────────────
-  # RETRY CONFIGURATION
-  # ─────────────────────────────────────────────────────────────────────────────
   retry:
     instances:
       mspm:
         max-attempts: 3
         wait-duration: 1s
-        exponential-backoff-multiplier: 2
-        retry-exceptions:
-          - java.net.ConnectException
-          - java.net.SocketTimeoutException
-          - java.io.IOException
-          - org.springframework.web.reactive.function.client.WebClientRequestException
-        ignore-exceptions:
-          - com.vyshali.positionloader.exception.MspmServiceException
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # CIRCUIT BREAKER CONFIGURATION
-  # ─────────────────────────────────────────────────────────────────────────────
   circuitbreaker:
     instances:
       mspm:
-        register-health-indicator: true
-        sliding-window-type: COUNT_BASED
         sliding-window-size: 10
         failure-rate-threshold: 50
         wait-duration-in-open-state: 30s
-        permitted-number-of-calls-in-half-open-state: 3
-        automatic-transition-from-open-to-half-open-enabled: true
-        record-exceptions:
-          - java.net.ConnectException
-          - java.net.SocketTimeoutException
-          - java.io.IOException
-          - org.springframework.web.reactive.function.client.WebClientRequestException
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # TIME LIMITER (for async calls)
-  # ─────────────────────────────────────────────────────────────────────────────
-  timelimiter:
-    instances:
-      mspm:
-        timeout-duration: 30s
-        cancel-running-future: true
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SHARDING CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-sharding:
-  enabled: ${SHARDING_ENABLED:false}
-  shard-index: ${SHARD_INDEX:0}
-  total-shards: ${TOTAL_SHARDS:1}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# RATE LIMITING CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-rate-limiting:
-  enabled: ${RATE_LIMITING_ENABLED:true}
-  requests-per-minute: ${RATE_LIMIT_RPM:60}
-  burst-capacity: ${RATE_LIMIT_BURST:10}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# UPLOAD LIMITS
-# ═══════════════════════════════════════════════════════════════════════════════
-upload:
-  max-positions: ${UPLOAD_MAX_POSITIONS:10000}
-  max-file-size-mb: ${UPLOAD_MAX_FILE_SIZE_MB:10}
-  max-accounts-per-batch: ${UPLOAD_MAX_ACCOUNTS:100}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SHUTDOWN CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-shutdown:
-  timeout-seconds: ${SHUTDOWN_TIMEOUT:30}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# IDEMPOTENCY CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-idempotency:
-  ttl-minutes: ${IDEMPOTENCY_TTL_MINUTES:60}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CACHE TTL CONFIGURATION (per cache name)
-# ═══════════════════════════════════════════════════════════════════════════════
-cache:
-  ttl:
-    clients: 3600        # 1 hour
-    funds: 3600          # 1 hour
-    accounts: 1800       # 30 minutes
-    products: 1800       # 30 minutes
-    activeBatch: 300     # 5 minutes
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ACTUATOR & HEALTH INDICATORS
-# ═══════════════════════════════════════════════════════════════════════════════
+# Actuator
 management:
   endpoints:
     web:
       exposure:
         include: health,info,metrics,prometheus
-      base-path: /actuator
-
   endpoint:
     health:
       show-details: when_authorized
-      show-components: always
       probes:
         enabled: true
-      group:
-        liveness:
-          include:
-            - livenessState
-          show-details: always
-        readiness:
-          include:
-            - readinessState
-            - db
-            - redis
-            - kafka
-            - mspm
-          show-details: always
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # HEALTH INDICATORS (Auto-configured by Spring Boot)
-  # ─────────────────────────────────────────────────────────────────────────────
-  health:
-    db:
-      enabled: true
-    redis:
-      enabled: true
-    kafka:
-      enabled: true
-    diskspace:
-      enabled: true
-      threshold: 100MB
-    circuitbreakers:
-      enabled: true
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # METRICS
-  # ─────────────────────────────────────────────────────────────────────────────
-  metrics:
-    tags:
-      application: ${spring.application.name}
-      environment: ${ENVIRONMENT:dev}
-    export:
-      prometheus:
-        enabled: true
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # TRACING
-  # ─────────────────────────────────────────────────────────────────────────────
-  tracing:
-    sampling:
-      probability: ${TRACING_SAMPLE_RATE:0.1}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# OBSERVABILITY (Micrometer Tracing)
-# ═══════════════════════════════════════════════════════════════════════════════
-micrometer:
-  tracing:
-    enabled: true
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SPRINGDOC / OPENAPI (Simplified from Java config)
-# ═══════════════════════════════════════════════════════════════════════════════
-springdoc:
-  api-docs:
-    path: /api-docs
-    enabled: true
-
-  swagger-ui:
-    path: /swagger-ui.html
-    enabled: ${SWAGGER_ENABLED:true}
-    tags-sorter: alpha
-    operations-sorter: alpha
-    display-request-duration: true
-    filter: true
-
-  paths-to-match:
-    - /api/**
-
-  packages-to-scan:
-    - com.vyshali.positionloader.controller
-
-  default-produces-media-type: application/json
-  default-consumes-media-type: application/json
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LOGGING
-# ═══════════════════════════════════════════════════════════════════════════════
+# Logging
 logging:
   level:
     root: INFO
-    com.vyshali.positionloader: ${LOG_LEVEL:INFO}
-    org.springframework.kafka: WARN
-    org.apache.kafka: WARN
-    org.hibernate.SQL: ${SQL_LOG_LEVEL:WARN}
-    io.github.resilience4j: INFO
+    com.vyshali: ${LOG_LEVEL:INFO}
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-}] %-5level %logger{36} - %msg%n"
+    console: "%d{HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# Swagger
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /api-docs
 
 ---
-# ═══════════════════════════════════════════════════════════════════════════════
-# DEVELOPMENT PROFILE
-# ═══════════════════════════════════════════════════════════════════════════════
+# Dev profile
 spring:
   config:
     activate:
       on-profile: dev
-
-  datasource:
-    url: jdbc:postgresql://localhost:5432/fxan_dev
-
-  kafka:
-    bootstrap-servers: localhost:9092
-
-  data:
-    redis:
-      host: localhost
-
 logging:
   level:
-    com.vyshali.positionloader: DEBUG
-    org.hibernate.SQL: DEBUG
-
-sharding:
-  enabled: false
-
-rate-limiting:
-  enabled: false
-
-management:
-  endpoint:
-    health:
-      show-details: always
+    com.vyshali: DEBUG
 
 ---
-# ═══════════════════════════════════════════════════════════════════════════════
-# TEST PROFILE
-# ═══════════════════════════════════════════════════════════════════════════════
-spring:
-  config:
-    activate:
-      on-profile: test
-
-  datasource:
-    url: jdbc:h2:mem:testdb
-    driver-class-name: org.h2.Driver
-
-  jpa:
-    hibernate:
-      ddl-auto: create-drop
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.H2Dialect
-
-  kafka:
-    bootstrap-servers: localhost:9092
-
-  data:
-    redis:
-      host: localhost
-
-sharding:
-  enabled: false
-
-rate-limiting:
-  enabled: false
-
-management:
-  endpoint:
-    health:
-      show-details: always
-
----
-# ═══════════════════════════════════════════════════════════════════════════════
-# PRODUCTION PROFILE
-# ═══════════════════════════════════════════════════════════════════════════════
+# Prod profile  
 spring:
   config:
     activate:
       on-profile: prod
-
 logging:
   level:
     root: WARN
-    com.vyshali.positionloader: INFO
-
-sharding:
-  enabled: true
-
-rate-limiting:
-  enabled: true
-
-management:
-  endpoint:
-    health:
-      show-details: when_authorized
-  tracing:
-    sampling:
-      probability: 0.05  # 5% sampling in prod
-
+    com.vyshali: INFO
 springdoc:
   swagger-ui:
-    enabled: false  # Disable Swagger in prod
+    enabled: false
