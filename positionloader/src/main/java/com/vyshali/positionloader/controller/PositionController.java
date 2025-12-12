@@ -1,9 +1,9 @@
 package com.vyshali.positionloader.controller;
 
+import com.vyshali.common.service.BusinessDayService;  // ✅ FROM COMMON MODULE
 import com.vyshali.positionloader.config.LoaderConfig;
 import com.vyshali.positionloader.dto.Dto;
 import com.vyshali.positionloader.repository.DataRepository;
-import com.vyshali.positionloader.service.BusinessDayService;
 import com.vyshali.positionloader.service.PositionService;
 import com.vyshali.positionloader.service.ReconciliationService;
 import com.vyshali.positionloader.service.ReconciliationService.PositionDiffReport;
@@ -23,6 +23,8 @@ import java.util.Map;
 
 /**
  * REST API for Position Loader - Phase 1-4 Complete
+ * 
+ * ✅ Uses common module's BusinessDayService
  */
 @Slf4j
 @RestController
@@ -33,7 +35,7 @@ public class PositionController {
     private final PositionService service;
     private final DataRepository repo;
     private final ReconciliationService reconciliationService;
-    private final BusinessDayService businessDayService;
+    private final BusinessDayService businessDayService;  // ✅ FROM COMMON MODULE
     private final LoaderConfig config;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -263,7 +265,7 @@ public class PositionController {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PHASE 4 #17: BUSINESS DAY INFO
+    // PHASE 4 #17: BUSINESS DAY INFO (Using Common Module)
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Operation(summary = "Check if a date is a business day (Phase 4)")
@@ -271,6 +273,8 @@ public class PositionController {
     public ResponseEntity<Map<String, Object>> isBusinessDay(
             @RequestParam(required = false) LocalDate date) {
         LocalDate checkDate = date != null ? date : LocalDate.now();
+        
+        // ✅ Using common module's BusinessDayService
         boolean isBusinessDay = businessDayService.isBusinessDay(checkDate);
 
         Map<String, Object> response = new HashMap<>();
@@ -287,11 +291,31 @@ public class PositionController {
             @RequestParam LocalDate date, 
             @RequestParam String name, 
             @RequestParam(defaultValue = "US") String country) {
+        
+        // ✅ Using common module's BusinessDayService
         businessDayService.addHoliday(date, name, country);
+        
         Map<String, Object> response = new HashMap<>();
         response.put("status", "added");
         response.put("date", date);
         response.put("name", name);
+        response.put("country", country);
+        return ResponseEntity.ok(response);
+    }
+
+    @Operation(summary = "Get T+2 settlement date")
+    @GetMapping("/api/v1/calendar/settlement")
+    public ResponseEntity<Map<String, Object>> getSettlementDate(
+            @RequestParam(required = false) LocalDate tradeDate) {
+        LocalDate trade = tradeDate != null ? tradeDate : LocalDate.now();
+        
+        // ✅ Using common module's BusinessDayService
+        LocalDate settlement = businessDayService.getT2SettlementDate(trade);
+        
+        Map<String, Object> response = new HashMap<>();
+        response.put("tradeDate", trade);
+        response.put("settlementDate", settlement);
+        response.put("businessDays", 2);
         return ResponseEntity.ok(response);
     }
 

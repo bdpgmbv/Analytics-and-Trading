@@ -1,10 +1,14 @@
 package com.vyshali.positionloader.repository;
 
+import com.vyshali.common.dto.SharedDto.DlqMessageDTO;
+import com.vyshali.common.repository.AuditRepository;
+import com.vyshali.common.repository.DlqRepository;
 import com.vyshali.positionloader.dto.Dto;
 import com.vyshali.positionloader.dto.PositionDto;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -12,6 +16,8 @@ import java.util.Map;
 /**
  * Facade repository that provides unified access to split repositories.
  * Used by controllers and services for simplified data access.
+ * 
+ * NOTE: Uses common module's AuditRepository and DlqRepository.
  */
 @Repository
 public class DataRepository {
@@ -20,6 +26,8 @@ public class DataRepository {
     private final BatchRepository batchRepository;
     private final EodRepository eodRepository;
     private final ReferenceDataRepository referenceDataRepository;
+    
+    // ✅ FROM COMMON MODULE
     private final AuditRepository auditRepository;
     private final DlqRepository dlqRepository;
     
@@ -28,8 +36,8 @@ public class DataRepository {
             BatchRepository batchRepository,
             EodRepository eodRepository,
             ReferenceDataRepository referenceDataRepository,
-            AuditRepository auditRepository,
-            DlqRepository dlqRepository) {
+            AuditRepository auditRepository,      // From common module
+            DlqRepository dlqRepository) {        // From common module
         this.positionRepository = positionRepository;
         this.batchRepository = batchRepository;
         this.eodRepository = eodRepository;
@@ -143,46 +151,81 @@ public class DataRepository {
         return referenceDataRepository.getAccountName(accountId);
     }
     
-    // ==================== Audit Operations ====================
+    // ==================== Audit Operations (Common Module) ====================
     
+    /**
+     * Log audit event asynchronously.
+     */
     public void logAudit(String eventType, int accountId, String details) {
         auditRepository.log(eventType, accountId, details);
     }
     
+    /**
+     * Log audit event with business date.
+     */
     public void logAudit(String eventType, int accountId, LocalDate businessDate, String details) {
         auditRepository.log(eventType, accountId, businessDate, details);
     }
     
-    // ==================== DLQ Operations ====================
+    /**
+     * Log audit event with actor.
+     */
+    public void logAudit(String eventType, int accountId, String actor, String details) {
+        auditRepository.log(eventType, accountId, actor, details);
+    }
     
+    // ==================== DLQ Operations (Common Module) ====================
+    
+    /**
+     * Get DLQ depth (pending message count).
+     */
     public int getDlqDepth() {
         return dlqRepository.countPending();
     }
     
+    /**
+     * Get DLQ messages for retry.
+     * Returns list of maps for backward compatibility with existing code.
+     */
     public List<Map<String, Object>> getDlqMessages(int limit) {
         return dlqRepository.findRetryable(limit).stream()
-            .map(msg -> {
-                Map<String, Object> map = new HashMap<>();
-                map.put("id", msg.id());
-                map.put("topic", msg.topic());
-                map.put("message_key", msg.messageKey());
-                map.put("payload", msg.payload());
-                map.put("retry_count", msg.retryCount());
-                return map;
-            })
+            .map(this::dlqToMap)
             .toList();
     }
     
+    /**
+     * Get DLQ messages as DTOs.
+     */
+    public List<DlqMessageDTO> getDlqMessagesDto(int limit) {
+        return dlqRepository.findRetryable(limit);
+    }
+    
+    /**
+     * Save message to DLQ.
+     */
     public void saveToDlq(String topic, String key, String payload, String error) {
         dlqRepository.insert(topic, key, payload, error);
     }
     
+    /**
+     * Mark DLQ message as processed (delete).
+     */
     public void deleteDlq(Long id) {
         dlqRepository.markProcessed(id);
     }
     
+    /**
+     * Increment DLQ retry count.
+     */
     public void incrementDlqRetry(Long id) {
-        dlqRepository.incrementRetry(id, java.time.LocalDateTime.now().plusMinutes(5));
+        dlqRepository.incrementRetry(id, LocalDateTime.now().plusMinutes(5));
+    }
+    
+    /**
+     * Mark DLQ message as failed permanently.
+     */
+    public void markDlqFailed(Long id, String reason) {
+        dlqRepository.markFailed(id, reason);
     }
     
     // ==================== Direct Repository Access ====================
@@ -203,10 +246,16 @@ public class DataRepository {
         return referenceDataRepository;
     }
     
+    /**
+     * Get common module's AuditRepository.
+     */
     public AuditRepository audit() {
         return auditRepository;
     }
     
+    /**
+     * Get common module's DlqRepository.
+     */
     public DlqRepository dlq() {
         return dlqRepository;
     }
@@ -227,5 +276,22 @@ public class DataRepository {
             dto.source(),
             dto.positionType()
         );
+    }
+    
+    /**
+     * Convert DlqMessageDTO to Map for backward compatibility.
+     */
+    private Map<String, Object> dlqToMap(DlqMessageDTO msg) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("id", msg.id());
+        map.put("topic", msg.topic());
+        map.put("message_key", msg.messageKey());
+        map.put("payload", msg.payload());
+        map.put("error_message", msg.errorMessage());
+        map.put("status", msg.status());
+        map.put("retry_count", msg.retryCount());
+        map.put("created_at", msg.createdAt());
+        map.put("next_retry_at", msg.nextRetryAt());
+        return map;
     }
 }

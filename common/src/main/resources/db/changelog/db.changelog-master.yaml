@@ -46,3 +46,7 @@ databaseChangeLog:
   - include:
       file: changes/010-positionloader-fixes.sql
       relativeToChangelogFile: true
+
+  - include:
+      file: db/changelog/migrations/011-fix-holiday-column-name.sql
+      relativeToChangelogFile: false
