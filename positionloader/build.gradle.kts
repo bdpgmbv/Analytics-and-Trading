@@ -17,64 +17,36 @@ repositories {
 }
 
 dependencies {
-
+    // ✅ ADD THIS - Common module with shared components
     implementation(project(":common"))
 
-    // Core
+    // Core Spring
     implementation("org.springframework.boot:spring-boot-starter-web")
-    implementation("org.springframework.boot:spring-boot-starter-jdbc")
-    implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+    implementation("org.springframework.boot:spring-boot-starter-validation")
 
-    // Security
-    implementation("org.springframework.boot:spring-boot-starter-security")
-    implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
+    // Database
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
+    runtimeOnly("org.postgresql:postgresql")
 
     // Kafka
     implementation("org.springframework.kafka:spring-kafka")
 
-    // Cache (simple in-memory)
-    implementation("org.springframework.boot:spring-boot-starter-cache")
-    implementation("com.github.ben-manes.caffeine:caffeine:3.1.8")
-
-    // Resilience
-    implementation("io.github.resilience4j:resilience4j-spring-boot3:2.1.0")
+    // Redis (for caching)
+    implementation("org.springframework.boot:spring-boot-starter-data-redis")
 
     // Metrics
     implementation("io.micrometer:micrometer-registry-prometheus")
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PHASE 3: TRACING - REQUIRED for KafkaListeners.java Tracer class
-    // ═══════════════════════════════════════════════════════════════════════════
-    implementation("io.micrometer:micrometer-tracing-bridge-otel")
-    implementation("io.opentelemetry:opentelemetry-exporter-otlp")
-
-    // Database
-    runtimeOnly("org.postgresql:postgresql")
 
     // Lombok
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
 
-    // JSON
-    implementation("com.fasterxml.jackson.core:jackson-databind")
-    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // JSON LOGGING - REQUIRED for logback-spring.xml LogstashEncoder
-    // ═══════════════════════════════════════════════════════════════════════════
-    implementation("net.logstash.logback:logstash-logback-encoder:7.4")
-
-    // API Docs
-    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.3.0")
-
     // Test
     testImplementation("org.springframework.boot:spring-boot-starter-test")
-    testImplementation("org.springframework.kafka:spring-kafka-test")
     testImplementation("org.testcontainers:testcontainers:1.19.3")
     testImplementation("org.testcontainers:junit-jupiter:1.19.3")
     testImplementation("org.testcontainers:postgresql:1.19.3")
-    testImplementation("org.testcontainers:kafka:1.19.3")
 }
 
 tasks.withType<Test> {

@@ -2,108 +2,74 @@ package com.vyshali.positionloader.dto;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 /**
- * Position Data Transfer Object.
- * Internal representation of a position used throughout the application.
+ * Position Loader DTOs.
+ * Keep your existing DTOs - this shows the expected structure.
  */
-public record PositionDto(
-    Long positionId,
-    int accountId,
-    int productId,
-    LocalDate businessDate,
-    BigDecimal quantity,
-    BigDecimal price,
-    String currency,
-    BigDecimal marketValueLocal,
-    BigDecimal marketValueBase,
-    BigDecimal avgCostPrice,
-    BigDecimal costLocal,
-    int batchId,
-    String source,
-    String positionType,
-    boolean isExcluded
-) {
-    
+public final class PositionDto {
+
+    private PositionDto() {}
+
     /**
-     * Create a position with basic fields.
+     * Position update from external source.
      */
-    public static PositionDto of(int accountId, int productId, LocalDate businessDate,
-            BigDecimal quantity, BigDecimal price, String currency) {
-        BigDecimal marketValue = quantity.multiply(price);
-        return new PositionDto(
-            null,
-            accountId,
-            productId,
-            businessDate,
-            quantity,
-            price,
-            currency,
-            marketValue,
-            marketValue,
-            price,
-            marketValue,
-            0,
-            "MANUAL",
-            "PHYSICAL",
-            false
-        );
-    }
-    
+    public record PositionUpdate(
+            int accountId,
+            int productId,
+            String ticker,
+            BigDecimal quantity,
+            BigDecimal price,
+            BigDecimal marketValueLocal,
+            BigDecimal marketValueBase,
+            String currency,
+            LocalDate businessDate,
+            String source
+    ) {}
+
     /**
-     * Create a copy with different source.
+     * Position snapshot.
      */
-    public PositionDto withSource(String newSource) {
-        return new PositionDto(
-            positionId, accountId, productId, businessDate,
-            quantity, price, currency,
-            marketValueLocal, marketValueBase,
-            avgCostPrice, costLocal,
-            batchId, newSource, positionType, isExcluded
-        );
-    }
-    
+    public record PositionSnapshot(
+            int accountId,
+            int productId,
+            String ticker,
+            BigDecimal quantity,
+            BigDecimal currentPrice,
+            BigDecimal averageCost,
+            BigDecimal marketValueLocal,
+            BigDecimal marketValueBase,
+            BigDecimal unrealizedPnl,
+            String currency,
+            String positionType,
+            boolean isExcluded,
+            LocalDateTime updatedAt
+    ) {}
+
     /**
-     * Create a copy with different batch ID.
+     * Batch information.
      */
-    public PositionDto withBatchId(int newBatchId) {
-        return new PositionDto(
-            positionId, accountId, productId, businessDate,
-            quantity, price, currency,
-            marketValueLocal, marketValueBase,
-            avgCostPrice, costLocal,
-            newBatchId, source, positionType, isExcluded
-        );
-    }
-    
+    public record BatchInfo(
+            long batchId,
+            int accountId,
+            String status,
+            LocalDate businessDate,
+            String source,
+            LocalDateTime createdAt,
+            LocalDateTime activatedAt
+    ) {}
+
     /**
-     * Create a copy with exclusion flag.
+     * EOD run status.
      */
-    public PositionDto withExcluded(boolean excluded) {
-        return new PositionDto(
-            positionId, accountId, productId, businessDate,
-            quantity, price, currency,
-            marketValueLocal, marketValueBase,
-            avgCostPrice, costLocal,
-            batchId, source, positionType, excluded
-        );
-    }
-    
-    /**
-     * Check if position has zero quantity.
-     */
-    public boolean isZeroQuantity() {
-        return quantity == null || quantity.compareTo(BigDecimal.ZERO) == 0;
-    }
-    
-    /**
-     * Check if position is valid (has required fields).
-     */
-    public boolean isValid() {
-        return accountId > 0 
-            && productId > 0 
-            && businessDate != null 
-            && quantity != null 
-            && currency != null && !currency.isBlank();
-    }
+    public record EodStatus(
+            LocalDate businessDate,
+            String status,
+            int accountsProcessed,
+            int accountsFailed,
+            LocalDateTime startedAt,
+            LocalDateTime completedAt,
+            String errorMessage
+    ) {}
 }

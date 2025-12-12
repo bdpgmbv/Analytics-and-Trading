@@ -1,22 +1,25 @@
 package com.vyshali.positionloader;
 
-import com.vyshali.positionloader.config.LoaderProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
- * Position Loader Application
+ * Position Loader - Loads and manages account positions for FX Analyzer.
  * 
- * A Spring Boot service for loading and managing trading positions.
- * Supports EOD batch processing, intraday updates, and position reconciliation.
+ * ✅ MODIFIED: Added scanBasePackages to include common module beans
+ * 
+ * Responsibilities:
+ * - Load positions from custodians/prime brokers
+ * - Reconcile positions against trade history
+ * - Calculate real-time market values
+ * - Publish position snapshots to Kafka
  */
-@SpringBootApplication
-@EnableConfigurationProperties(LoaderProperties.class)
+@SpringBootApplication(scanBasePackages = {
+    "com.vyshali.positionloader",
+    "com.vyshali.common"  // ✅ ADD THIS - Include common module beans
+})
 @EnableScheduling
-@EnableAsync
 public class PositionLoaderApplication {
     public static void main(String[] args) {
         SpringApplication.run(PositionLoaderApplication.class, args);
