@@ -1,0 +1,115 @@
+databaseChangeLog:
+  - changeSet:
+      id: 016-create-price-overrides-table
+      author: vyshali
+      comment: "Create price_overrides table - user-provided price/FX rate overrides via UI"
+      changes:
+        - createTable:
+            tableName: price_overrides
+            columns:
+              - column:
+                  name: override_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_price_overrides
+              - column:
+                  name: account_id
+                  type: bigint
+                  constraints:
+                    foreignKeyName: fk_overrides_account
+                    references: accounts(account_id)
+              - column:
+                  name: product_id
+                  type: bigint
+                  constraints:
+                    foreignKeyName: fk_overrides_product
+                    references: products(product_id)
+              - column:
+                  name: currency_pair
+                  type: varchar(7)
+              - column:
+                  name: override_type
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: override_value
+                  type: decimal(18,8)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: effective_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expiry_date
+                  type: date
+              - column:
+                  name: override_reason
+                  type: varchar(255)
+              - column:
+                  name: created_by
+                  type: varchar(50)
+              - column:
+                  name: is_active
+                  type: boolean
+                  defaultValueBoolean: true
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - createIndex:
+            tableName: price_overrides
+            indexName: idx_overrides_product
+            columns:
+              - column:
+                  name: product_id
+
+        - createIndex:
+            tableName: price_overrides
+            indexName: idx_overrides_pair
+            columns:
+              - column:
+                  name: currency_pair
+
+        - createIndex:
+            tableName: price_overrides
+            indexName: idx_overrides_effective
+            columns:
+              - column:
+                  name: effective_date
+
+        - createIndex:
+            tableName: price_overrides
+            indexName: idx_overrides_active
+            columns:
+              - column:
+                  name: is_active
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_price_overrides_updated_at
+                  BEFORE UPDATE ON price_overrides
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_price_overrides_updated_at ON price_overrides;
+
+        # Check constraint: either product_id or currency_pair must be set
+        - sql:
+            sql: |
+              ALTER TABLE price_overrides ADD CONSTRAINT chk_override_target
+              CHECK (product_id IS NOT NULL OR currency_pair IS NOT NULL);
+            rollback: |
+              ALTER TABLE price_overrides DROP CONSTRAINT IF EXISTS chk_override_target;
+
+      rollback:
+        - dropTable:
+            tableName: price_overrides

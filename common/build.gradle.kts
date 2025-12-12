@@ -1,56 +1,35 @@
 plugins {
-    `java-library`
+    java
+    id("org.springframework.boot") version "3.2.1"
     id("io.spring.dependency-management") version "1.1.4"
 }
 
-group = "com.vyshali"
-version = "2.0.0"
-
-java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
-}
-
-repositories {
-    mavenCentral()
-}
-
-dependencyManagement {
-    imports {
-        mavenBom("org.springframework.boot:spring-boot-dependencies:3.2.3")
-    }
-}
+// Don't create bootJar for library module
+tasks.bootJar { enabled = false }
+tasks.jar { enabled = true }
 
 dependencies {
-    // Spring Boot (provided - services will have these)
-    compileOnly("org.springframework.boot:spring-boot-starter-web")
-    compileOnly("org.springframework.boot:spring-boot-starter-jdbc")
-    compileOnly("org.springframework.boot:spring-boot-starter-data-redis")
-    compileOnly("org.springframework.boot:spring-boot-starter-actuator")
-    compileOnly("org.springframework.kafka:spring-kafka")
+    // Spring Boot starters
+    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    implementation("org.springframework.boot:spring-boot-starter-validation")
     
-    // Resilience4j
-    api("io.github.resilience4j:resilience4j-spring-boot3:2.2.0")
-    api("io.github.resilience4j:resilience4j-circuitbreaker:2.2.0")
-    api("io.github.resilience4j:resilience4j-retry:2.2.0")
+    // Database
+    implementation("org.postgresql:postgresql:42.7.1")
     
-    // Caffeine cache
-    api("com.github.ben-manes.caffeine:caffeine:3.1.8")
+    // Utilities
+    implementation("org.apache.commons:commons-lang3:3.14.0")
+    implementation("com.google.guava:guava:32.1.3-jre")
     
-    // Micrometer metrics
-    api("io.micrometer:micrometer-core")
+    // MapStruct for DTO mapping
+    implementation("org.mapstruct:mapstruct:1.5.5.Final")
+    annotationProcessor("org.mapstruct:mapstruct-processor:1.5.5.Final")
     
-    // Jackson
-    api("com.fasterxml.jackson.core:jackson-databind")
-    api("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
+    // Lombok (already in root, but need processor order)
+    compileOnly("org.projectlombok:lombok:1.18.30")
+    annotationProcessor("org.projectlombok:lombok:1.18.30")
+    annotationProcessor("org.projectlombok:lombok-mapstruct-binding:0.2.0")
     
-    // Lombok
-    compileOnly("org.projectlombok:lombok")
-    annotationProcessor("org.projectlombok:lombok")
-    
-    // Validation
-    api("jakarta.validation:jakarta.validation-api")
-    
-    // Logging
-    api("org.slf4j:slf4j-api")
+    // Testing
+    testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation("com.h2database:h2:2.2.224")
 }

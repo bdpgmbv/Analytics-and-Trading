@@ -1,0 +1,112 @@
+databaseChangeLog:
+  - changeSet:
+      id: 007-create-snapshots-table
+      author: vyshali
+      comment: "Create snapshots table - point-in-time snapshots for EOD/Intraday positions"
+      changes:
+        - createTable:
+            tableName: snapshots
+            columns:
+              - column:
+                  name: snapshot_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_snapshots
+              - column:
+                  name: account_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_snapshots_account
+                    references: accounts(account_id)
+              - column:
+                  name: snapshot_type
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: snapshot_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: snapshot_time
+                  type: timestamp
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(20)
+                  defaultValue: "ACTIVE"
+              - column:
+                  name: position_count
+                  type: integer
+                  defaultValueNumeric: 0
+              - column:
+                  name: total_mv_base
+                  type: decimal(18,4)
+              - column:
+                  name: source_system
+                  type: varchar(20)
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - createIndex:
+            tableName: snapshots
+            indexName: idx_snapshots_account
+            columns:
+              - column:
+                  name: account_id
+
+        - createIndex:
+            tableName: snapshots
+            indexName: idx_snapshots_date
+            columns:
+              - column:
+                  name: snapshot_date
+
+        - createIndex:
+            tableName: snapshots
+            indexName: idx_snapshots_type_date
+            columns:
+              - column:
+                  name: snapshot_type
+              - column:
+                  name: snapshot_date
+
+        - createIndex:
+            tableName: snapshots
+            indexName: idx_snapshots_status
+            columns:
+              - column:
+                  name: status
+
+        # Partial unique index for active snapshots
+        - sql:
+            comment: "Ensure only one active snapshot per account/type/date"
+            sql: |
+              CREATE UNIQUE INDEX uq_snapshots_active 
+              ON snapshots (account_id, snapshot_type, snapshot_date) 
+              WHERE status = 'ACTIVE';
+            rollback: |
+              DROP INDEX IF EXISTS uq_snapshots_active;
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_snapshots_updated_at
+                  BEFORE UPDATE ON snapshots
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_snapshots_updated_at ON snapshots;
+
+      rollback:
+        - dropTable:
+            tableName: snapshots

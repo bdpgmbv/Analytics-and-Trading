@@ -1,0 +1,84 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-create-accounts-table
+      author: vyshali
+      comment: "Create accounts table - custody/trading accounts under a fund"
+      changes:
+        - createTable:
+            tableName: accounts
+            columns:
+              - column:
+                  name: account_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_accounts
+              - column:
+                  name: fund_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_accounts_fund
+                    references: funds(fund_id)
+              - column:
+                  name: account_number
+                  type: varchar(50)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uq_accounts_number
+              - column:
+                  name: account_type
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: source_system
+                  type: varchar(20)
+                  defaultValue: "MSPM"
+              - column:
+                  name: status
+                  type: varchar(20)
+                  defaultValue: "ACTIVE"
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - createIndex:
+            tableName: accounts
+            indexName: idx_accounts_fund
+            columns:
+              - column:
+                  name: fund_id
+
+        - createIndex:
+            tableName: accounts
+            indexName: idx_accounts_source
+            columns:
+              - column:
+                  name: source_system
+
+        - createIndex:
+            tableName: accounts
+            indexName: idx_accounts_status
+            columns:
+              - column:
+                  name: status
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_accounts_updated_at
+                  BEFORE UPDATE ON accounts
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_accounts_updated_at ON accounts;
+
+      rollback:
+        - dropTable:
+            tableName: accounts

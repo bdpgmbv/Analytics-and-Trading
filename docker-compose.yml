@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: fxanalyzer-postgres
+    environment:
+      POSTGRES_DB: fxanalyzer
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fxanalyzer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fxanalyzer-network
+
+  # pgAdmin for database management (optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: fxanalyzer-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@fxanalyzer.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - fxanalyzer-network
+    profiles:
+      - tools
+
+  # Redis for caching (for future use)
+  redis:
+    image: redis:7-alpine
+    container_name: fxanalyzer-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fxanalyzer-network
+
+  # Kafka for messaging (for future Trade Fill Processor)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: fxanalyzer-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - fxanalyzer-network
+    profiles:
+      - messaging
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: fxanalyzer-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - fxanalyzer-network
+    profiles:
+      - messaging
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  fxanalyzer-network:
+    driver: bridge

@@ -1,0 +1,127 @@
+databaseChangeLog:
+  - changeSet:
+      id: 012-create-forward-contracts-table
+      author: vyshali
+      comment: "Create forward_contracts table - for Tab 5 Forward Maturity Alert"
+      changes:
+        - createTable:
+            tableName: forward_contracts
+            columns:
+              - column:
+                  name: forward_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_forward_contracts
+              - column:
+                  name: account_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_forwards_account
+                    references: accounts(account_id)
+              - column:
+                  name: counterparty_id
+                  type: bigint
+                  constraints:
+                    foreignKeyName: fk_forwards_counterparty
+                    references: counterparties(counterparty_id)
+              - column:
+                  name: buy_currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sell_currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: buy_amount
+                  type: decimal(18,4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sell_amount
+                  type: decimal(18,4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: strike_rate
+                  type: decimal(18,8)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: trade_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: value_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: days_to_maturity
+                  type: integer
+              - column:
+                  name: current_notional
+                  type: decimal(18,4)
+              - column:
+                  name: unhedged_notional
+                  type: decimal(18,4)
+              - column:
+                  name: status
+                  type: varchar(20)
+                  defaultValue: "ACTIVE"
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - createIndex:
+            tableName: forward_contracts
+            indexName: idx_forwards_account
+            columns:
+              - column:
+                  name: account_id
+
+        - createIndex:
+            tableName: forward_contracts
+            indexName: idx_forwards_value_date
+            columns:
+              - column:
+                  name: value_date
+
+        - createIndex:
+            tableName: forward_contracts
+            indexName: idx_forwards_status
+            columns:
+              - column:
+                  name: status
+
+        # Partial index for active forwards with maturity
+        - sql:
+            sql: |
+              CREATE INDEX idx_forwards_maturity_active 
+              ON forward_contracts (days_to_maturity) 
+              WHERE status = 'ACTIVE';
+            rollback: |
+              DROP INDEX IF EXISTS idx_forwards_maturity_active;
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_forward_contracts_updated_at
+                  BEFORE UPDATE ON forward_contracts
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_forward_contracts_updated_at ON forward_contracts;
+
+      rollback:
+        - dropTable:
+            tableName: forward_contracts

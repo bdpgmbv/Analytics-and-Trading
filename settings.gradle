@@ -1,9 +1,0 @@
-rootProject.name = 'analyticsandtrading'
-
-include 'common'
-include 'positionloader'
-include 'priceservice'
-include 'tradefillprocessor'
-include 'mock-upstream'
-include 'hedgeservice'
-include 'gateway'

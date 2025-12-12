@@ -1,0 +1,115 @@
+databaseChangeLog:
+  - changeSet:
+      id: 015-create-fx-rates-table
+      author: vyshali
+      comment: "Create fx_rates table - FX spot and forward rates"
+      changes:
+        - createTable:
+            tableName: fx_rates
+            columns:
+              - column:
+                  name: fx_rate_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_fx_rates
+              - column:
+                  name: currency_pair
+                  type: varchar(7)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: base_currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: quote_currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: rate_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: rate_time
+                  type: timestamp
+              - column:
+                  name: mid_rate
+                  type: decimal(18,8)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: bid_rate
+                  type: decimal(18,8)
+              - column:
+                  name: ask_rate
+                  type: decimal(18,8)
+              - column:
+                  name: forward_points_1m
+                  type: decimal(18,8)
+              - column:
+                  name: forward_points_3m
+                  type: decimal(18,8)
+              - column:
+                  name: source
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: is_stale
+                  type: boolean
+                  defaultValueBoolean: false
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - addUniqueConstraint:
+            tableName: fx_rates
+            columnNames: currency_pair, rate_date, source
+            constraintName: uq_fx_rates_pair_date_source
+
+        - createIndex:
+            tableName: fx_rates
+            indexName: idx_fx_rates_pair_date
+            columns:
+              - column:
+                  name: currency_pair
+              - column:
+                  name: rate_date
+
+        - createIndex:
+            tableName: fx_rates
+            indexName: idx_fx_rates_base_quote
+            columns:
+              - column:
+                  name: base_currency
+              - column:
+                  name: quote_currency
+
+        - createIndex:
+            tableName: fx_rates
+            indexName: idx_fx_rates_date
+            columns:
+              - column:
+                  name: rate_date
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_fx_rates_updated_at
+                  BEFORE UPDATE ON fx_rates
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_fx_rates_updated_at ON fx_rates;
+
+      rollback:
+        - dropTable:
+            tableName: fx_rates

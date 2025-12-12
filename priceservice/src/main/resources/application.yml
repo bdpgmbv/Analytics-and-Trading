@@ -1,139 +1,196 @@
 server:
-  port: 8080
+  port: 8082
+  servlet:
+    context-path: /
 
 spring:
   application:
-    name: priceservice
+    name: price-service
 
-  threads:
-    virtual:
-      enabled: true
+  profiles:
+    include: common
 
-  # --- Database Configuration ---
+  # Database
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/analyticsandtrading}
-    username: ${DB_USER:postgres}
-    password: ${DB_PASS:password}
+    url: jdbc:postgresql://localhost:5432/fxanalyzer
+    username: fxanalyzer
+    password: fxanalyzer
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: 30
-      minimum-idle: 10
       connection-timeout: 30000
       idle-timeout: 600000
       max-lifetime: 1800000
-      pool-name: PriceServicePool
+      maximum-pool-size: 10
+      minimum-idle: 5
+      pool-name: price-service-pool
 
-  # --- Liquibase ---
-  liquibase:
-    change-log: classpath:db/changelog/db.changelog-master.yaml
-    enabled: true
-    contexts: dev,test
+  # JPA
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
 
-  # --- Redis Configuration ---
+  # Redis
   data:
     redis:
-      host: ${SPRING_DATA_REDIS_HOST:localhost}
-      port: ${SPRING_DATA_REDIS_PORT:6379}
+      host: localhost
+      port: 6379
       timeout: 2000ms
       lettuce:
         pool:
-          max-active: 20
-          max-idle: 10
-          min-idle: 5
+          max-active: 10
+          max-idle: 5
+          min-idle: 2
 
-  # --- Cache Configuration ---
-  cache:
-    type: redis
-    redis:
-      time-to-live: 24h
-      cache-null-values: false
-
-  # --- Kafka Configuration ---
+  # Kafka
   kafka:
-    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    consumer:
-      group-id: priceservice-group
-      enable-auto-commit: false
-      auto-offset-reset: latest
-      properties:
-        max.poll.records: 500
-        fetch.min.bytes: 102400
-        fetch.max.wait.ms: 100
-    listener:
-      ack-mode: MANUAL_IMMEDIATE
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: "1"
+      retries: 2
 
-  # --- Security Configuration ---
-  security:
-    oauth2:
-      resourceserver:
-        jwt:
-          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://keycloak:8080/realms/trading-realm}
-          jwk-set-uri: ${KEYCLOAK_JWK_URI:http://keycloak:8080/realms/trading-realm/protocol/openid-connect/certs}
-
-# --- Observability ---
+# Management endpoints
 management:
   endpoints:
     web:
       exposure:
-        include: "health,metrics,prometheus,info"
+        include: health,info,metrics,prometheus,circuitbreakers,caches
   endpoint:
     health:
       show-details: when_authorized
-      probes:
-        enabled: true
-  tracing:
-    sampling:
-      probability: 1.0
-  zipkin:
-    tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://tempo:9411/api/v2/spans}
   metrics:
     tags:
       application: ${spring.application.name}
 
-# --- Application Configuration ---
-app:
-  sharding:
-    enabled: ${SHARDING_ENABLED:true}
-    shard-id: ${SHARD_ID:0}
-    total-shards: ${TOTAL_SHARDS:1}
-
-  pricing:
-    staleness-threshold-minutes: 15
-    conflation-interval-ms: 250
-
-# --- Logging ---
+# Logging
 logging:
   level:
-    com.vyshali.priceservice: DEBUG
-    org.springframework.kafka: INFO
-    org.springframework.data.redis: INFO
-    org.springframework.security: INFO
+    root: INFO
+    com.vyshali.fxanalyzer: DEBUG
+    io.github.resilience4j: INFO
   pattern:
-    console: "%d{HH:mm:ss.SSS} [%thread] [%X{traceId},%X{spanId}] %-5level %logger{36} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# FX Analyzer Price Service Configuration
+fxanalyzer:
+  # Price configuration
+  price:
+    staleness-threshold-minutes: 30
+    staleness-check-interval-ms: 60000
+  
+  # Cache configuration
+  cache:
+    prices:
+      l1-ttl-seconds: 30    # Caffeine L1 cache TTL
+      l2-ttl-seconds: 300   # Redis L2 cache TTL
+    fx-rates:
+      l1-ttl-seconds: 60
+      l2-ttl-seconds: 300
+
+  # Kafka topics
+  kafka:
+    topics:
+      price-updates: fxanalyzer.prices.updated
+
+# Resilience4j configuration
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        slow-call-duration-threshold: 5s
+        slow-call-rate-threshold: 50
+    instances:
+      priceService:
+        base-config: default
+      fxRateService:
+        base-config: default
+        failure-rate-threshold: 40
+      filter:
+        sliding-window-size: 20
+        failure-rate-threshold: 40
+        wait-duration-in-open-state: 60s
+      rcp:
+        base-config: default
+      mspa:
+        base-config: default
+
+  retry:
+    configs:
+      default:
+        max-attempts: 3
+        wait-duration: 500ms
+    instances:
+      priceRetry:
+        base-config: default
+        max-attempts: 3
+
+  timelimiter:
+    configs:
+      default:
+        timeout-duration: 5s
+        cancel-running-future: true
+    instances:
+      priceTimeLimiter:
+        timeout-duration: 3s
+
+# SpringDoc OpenAPI
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
 
 ---
-# Production Profile
+# Development profile
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  jpa:
+    show-sql: true
+
+logging:
+  level:
+    org.hibernate.SQL: DEBUG
+    io.github.resilience4j: DEBUG
+
+---
+# Production profile
 spring:
   config:
     activate:
       on-profile: prod
 
-  liquibase:
-    contexts: prod
+  datasource:
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 10
+
+  data:
+    redis:
+      lettuce:
+        pool:
+          max-active: 20
+          max-idle: 10
+
+fxanalyzer:
+  cache:
+    prices:
+      l1-ttl-seconds: 15    # Shorter TTL in prod for fresher data
+      l2-ttl-seconds: 180
 
 logging:
   level:
-    com.vyshali.priceservice: INFO
-    org.springframework.kafka: WARN
-    org.springframework.data.redis: WARN
-    org.springframework.security: WARN
-
-management:
-  tracing:
-    sampling:
-      probability: 0.1
-
-app:
-  sharding:
-    enabled: true
+    root: WARN
+    com.vyshali.fxanalyzer: INFO

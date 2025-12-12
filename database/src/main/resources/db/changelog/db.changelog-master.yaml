@@ -1,0 +1,93 @@
+databaseChangeLog:
+  - property:
+      name: now
+      value: "current_timestamp"
+      dbms: postgresql
+
+  # ============================================
+  # SCHEMA VERSION 1.0.0 - Initial Schema
+  # ============================================
+  
+  # Reference Data Tables
+  - include:
+      file: tables/001-clients.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/002-funds.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/003-accounts.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/004-products.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/005-counterparties.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/006-share-classes.yaml
+      relativeToChangelogFile: true
+
+  # Position Data Tables
+  - include:
+      file: tables/007-snapshots.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/008-positions.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/009-exposures.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/010-cash-balances.yaml
+      relativeToChangelogFile: true
+
+  # Trading Data Tables
+  - include:
+      file: tables/011-transactions.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/012-forward-contracts.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/013-trade-executions.yaml
+      relativeToChangelogFile: true
+
+  # Pricing Data Tables
+  - include:
+      file: tables/014-prices.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/015-fx-rates.yaml
+      relativeToChangelogFile: true
+
+  - include:
+      file: tables/016-price-overrides.yaml
+      relativeToChangelogFile: true
+
+  # Seed Data (Reference data for testing)
+  - include:
+      file: seed/001-seed-clients.yaml
+      relativeToChangelogFile: true
+      context: seed
+
+  - include:
+      file: seed/002-seed-products.yaml
+      relativeToChangelogFile: true
+      context: seed
+
+  - include:
+      file: seed/003-seed-counterparties.yaml
+      relativeToChangelogFile: true
+      context: seed

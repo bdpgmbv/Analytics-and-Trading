@@ -1,0 +1,78 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-create-funds-table
+      author: vyshali
+      comment: "Create funds table - investment funds under a client"
+      changes:
+        - createTable:
+            tableName: funds
+            columns:
+              - column:
+                  name: fund_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_funds
+              - column:
+                  name: client_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_funds_client
+                    references: clients(client_id)
+              - column:
+                  name: fund_code
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uq_funds_code
+              - column:
+                  name: fund_name
+                  type: varchar(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: base_currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(20)
+                  defaultValue: "ACTIVE"
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - createIndex:
+            tableName: funds
+            indexName: idx_funds_client
+            columns:
+              - column:
+                  name: client_id
+
+        - createIndex:
+            tableName: funds
+            indexName: idx_funds_base_ccy
+            columns:
+              - column:
+                  name: base_currency
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_funds_updated_at
+                  BEFORE UPDATE ON funds
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_funds_updated_at ON funds;
+
+      rollback:
+        - dropTable:
+            tableName: funds

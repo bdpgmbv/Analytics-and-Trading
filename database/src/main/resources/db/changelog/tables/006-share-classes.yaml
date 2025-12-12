@@ -1,0 +1,95 @@
+databaseChangeLog:
+  - changeSet:
+      id: 006-create-share-classes-table
+      author: vyshali
+      comment: "Create share_classes table - for Tab 3 Share Class management"
+      changes:
+        - createTable:
+            tableName: share_classes
+            columns:
+              - column:
+                  name: share_class_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_share_classes
+              - column:
+                  name: fund_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_share_classes_fund
+                    references: funds(fund_id)
+              - column:
+                  name: share_class_code
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: share_class_name
+                  type: varchar(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: nav
+                  type: decimal(18,4)
+              - column:
+                  name: performance_adjustment
+                  type: decimal(18,4)
+                  defaultValueNumeric: 0
+              - column:
+                  name: subscription_redemption
+                  type: decimal(18,4)
+                  defaultValueNumeric: 0
+              - column:
+                  name: net_exposure
+                  type: decimal(18,4)
+              - column:
+                  name: status
+                  type: varchar(20)
+                  defaultValue: "ACTIVE"
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - addUniqueConstraint:
+            tableName: share_classes
+            columnNames: fund_id, share_class_code
+            constraintName: uq_share_classes_fund_code
+
+        - createIndex:
+            tableName: share_classes
+            indexName: idx_share_classes_fund
+            columns:
+              - column:
+                  name: fund_id
+
+        - createIndex:
+            tableName: share_classes
+            indexName: idx_share_classes_currency
+            columns:
+              - column:
+                  name: currency
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_share_classes_updated_at
+                  BEFORE UPDATE ON share_classes
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_share_classes_updated_at ON share_classes;
+
+      rollback:
+        - dropTable:
+            tableName: share_classes

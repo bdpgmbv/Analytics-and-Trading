@@ -1,0 +1,52 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005-create-counterparties-table
+      author: vyshali
+      comment: "Create counterparties table - trading counterparties for FX trades"
+      changes:
+        - createTable:
+            tableName: counterparties
+            columns:
+              - column:
+                  name: counterparty_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_counterparties
+              - column:
+                  name: counterparty_code
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uq_counterparties_code
+              - column:
+                  name: counterparty_name
+                  type: varchar(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: is_active
+                  type: boolean
+                  defaultValueBoolean: true
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_counterparties_updated_at
+                  BEFORE UPDATE ON counterparties
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_counterparties_updated_at ON counterparties;
+
+      rollback:
+        - dropTable:
+            tableName: counterparties

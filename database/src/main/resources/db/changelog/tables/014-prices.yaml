@@ -1,0 +1,119 @@
+databaseChangeLog:
+  - changeSet:
+      id: 014-create-prices-table
+      author: vyshali
+      comment: "Create prices table - security prices with source hierarchy (OVERRIDE > REALTIME > RCP_SNAP > MSPA)"
+      changes:
+        - createTable:
+            tableName: prices
+            columns:
+              - column:
+                  name: price_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_prices
+              - column:
+                  name: product_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_prices_product
+                    references: products(product_id)
+              - column:
+                  name: price_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: price_time
+                  type: timestamp
+              - column:
+                  name: price_value
+                  type: decimal(18,6)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: bid_price
+                  type: decimal(18,6)
+              - column:
+                  name: ask_price
+                  type: decimal(18,6)
+              - column:
+                  name: source
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: source_priority
+                  type: integer
+                  constraints:
+                    nullable: false
+              - column:
+                  name: is_stale
+                  type: boolean
+                  defaultValueBoolean: false
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - createIndex:
+            tableName: prices
+            indexName: idx_prices_product_date
+            columns:
+              - column:
+                  name: product_id
+              - column:
+                  name: price_date
+
+        - createIndex:
+            tableName: prices
+            indexName: idx_prices_source
+            columns:
+              - column:
+                  name: source
+
+        - createIndex:
+            tableName: prices
+            indexName: idx_prices_date
+            columns:
+              - column:
+                  name: price_date
+
+        # Index for finding best price (lowest priority = highest precedence)
+        - createIndex:
+            tableName: prices
+            indexName: idx_prices_priority
+            columns:
+              - column:
+                  name: product_id
+              - column:
+                  name: price_date
+              - column:
+                  name: source_priority
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_prices_updated_at
+                  BEFORE UPDATE ON prices
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_prices_updated_at ON prices;
+
+        # Add comments for source priority
+        - sql:
+            sql: |
+              COMMENT ON COLUMN prices.source_priority IS 
+              'Priority: 1=OVERRIDE (highest), 2=REALTIME, 3=RCP_SNAP, 4=MSPA (lowest). Lower number = higher priority.';
+            rollback: |
+              COMMENT ON COLUMN prices.source_priority IS NULL;
+
+      rollback:
+        - dropTable:
+            tableName: prices

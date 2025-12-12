@@ -1,43 +1,57 @@
-import info.solidsoft.gradle.pitest.PitestPluginExtension
-
 plugins {
-	id("org.springframework.boot") version "3.2.3" apply false
-	id("io.spring.dependency-management") version "1.1.4" apply false
-	id("com.diffplug.spotless") version "6.25.0"
-	id("info.solidsoft.pitest") version "1.15.0" apply false
-	java
+    java
+    id("org.springframework.boot") version "3.2.1" apply false
+    id("io.spring.dependency-management") version "1.1.4" apply false
+    id("org.liquibase.gradle") version "2.2.1" apply false
 }
 
 allprojects {
-	group = "com.vyshali"
-	version = "1.0.0-SNAPSHOT"
+    group = "com.vyshali"
+    version = "1.0.0-SNAPSHOT"
 
-	repositories {
-		mavenCentral()
-	}
-
-	apply(plugin = "com.diffplug.spotless")
-	spotless {
-		java {
-			googleJavaFormat("1.17.0").aosp().reflowLongStrings()
-			toggleOffOn()
-			removeUnusedImports()
-			trimTrailingWhitespace()
-			endWithNewline()
-		}
-	}
+    repositories {
+        mavenCentral()
+    }
 }
 
 subprojects {
-	pluginManager.withPlugin("java") {
-		apply(plugin = "info.solidsoft.pitest")
-		configure<PitestPluginExtension> {
-			junit5PluginVersion.set("1.2.1")
-			targetClasses.set(setOf("com.vyshali.*.service.*", "com.vyshali.*.logic.*"))
-			excludedClasses.set(setOf("*DTO", "*Config", "*Application", "*Test"))
-			threads.set(4)
-			outputFormats.set(setOf("XML", "HTML"))
-			timestampedReports.set(false)
-		}
-	}
+    apply(plugin = "java")
+
+    java {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    tasks.withType<JavaCompile> {
+        options.encoding = "UTF-8"
+        options.compilerArgs.addAll(listOf("-parameters"))
+    }
+
+    tasks.withType<Test> {
+        useJUnitPlatform()
+    }
+
+    dependencies {
+        // Lombok for all modules
+        compileOnly("org.projectlombok:lombok:1.18.30")
+        annotationProcessor("org.projectlombok:lombok:1.18.30")
+        
+        // Testing
+        testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
+        testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    }
+}
+
+// Task to clean all modules
+tasks.register("cleanAll") {
+    dependsOn(subprojects.map { it.tasks.named("clean") })
+    description = "Cleans all subprojects"
+    group = "build"
+}
+
+// Task to build all modules
+tasks.register("buildAll") {
+    dependsOn(subprojects.map { it.tasks.named("build") })
+    description = "Builds all subprojects"
+    group = "build"
 }

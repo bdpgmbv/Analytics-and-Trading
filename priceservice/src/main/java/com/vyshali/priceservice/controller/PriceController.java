@@ -1,139 +1,154 @@
 package com.vyshali.priceservice.controller;
 
-/*
- * 12/11/2025 - REST Controller for Price Service
- * @author Vyshali Prabananth Lal
- *
- * Provides HTTP endpoints for price and FX rate queries.
- * Complements WebSocket real-time streaming with request/response API.
- */
-
-import com.vyshali.priceservice.dto.FxRateDTO;
-import com.vyshali.priceservice.dto.PriceTickDTO;
-import com.vyshali.priceservice.repository.FxRepository;
-import com.vyshali.priceservice.service.FxCacheService;
-import com.vyshali.priceservice.service.PriceCacheService;
+import com.vyshali.fxanalyzer.common.dto.ApiResponse;
+import com.vyshali.fxanalyzer.common.dto.FxRateDto;
+import com.vyshali.fxanalyzer.common.dto.PriceDto;
+import com.vyshali.fxanalyzer.priceservice.cache.PriceCacheService;
+import com.vyshali.fxanalyzer.priceservice.service.FxRateService;
+import com.vyshali.fxanalyzer.priceservice.service.PriceService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * REST controller for Price Service.
+ * Provides security prices and FX rates with caching.
+ */
 @Slf4j
 @RestController
-@RequestMapping("/api")
+@RequestMapping("/api/v1/prices")
 @RequiredArgsConstructor
+@Tag(name = "Price Service", description = "Security prices and FX rates")
 public class PriceController {
 
-    private final PriceCacheService priceCache;
-    private final FxCacheService fxCache;
-    private final FxRepository fxRepository;
+    private final PriceService priceService;
+    private final FxRateService fxRateService;
+    private final PriceCacheService cacheService;
 
-    // ============================================================
-    // Price Endpoints
-    // ============================================================
+    // ==================== Health & Status ====================
 
-    /**
-     * Get latest price for a single product.
-     * GET /api/prices/{productId}
-     */
-    @GetMapping("/prices/{productId}")
-    public ResponseEntity<PriceTickDTO> getPrice(@PathVariable Integer productId) {
-        PriceTickDTO price = priceCache.getPrice(productId);
-        if (price == null) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.ok(price);
+    @GetMapping("/health")
+    @Operation(summary = "Health check")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> health() {
+        Map<String, Object> health = new HashMap<>();
+        health.put("status", "UP");
+        health.put("service", "price-service");
+        health.put("cacheStats", cacheService.getStats());
+        return ResponseEntity.ok(ApiResponse.success(health));
     }
 
-    /**
-     * Get latest prices for multiple products.
-     * POST /api/prices/batch
-     * Body: [1001, 1002, 1003]
-     */
-    @PostMapping("/prices/batch")
-    public ResponseEntity<Map<Integer, PriceTickDTO>> getPrices(@RequestBody List<Integer> productIds) {
-        Map<Integer, PriceTickDTO> prices = new java.util.HashMap<>();
-        for (Integer id : productIds) {
-            PriceTickDTO price = priceCache.getPrice(id);
-            if (price != null) {
-                prices.put(id, price);
-            }
-        }
-        return ResponseEntity.ok(prices);
+    // ==================== Security Prices ====================
+
+    @GetMapping("/{productId}")
+    @Operation(summary = "Get price by product ID")
+    public ResponseEntity<ApiResponse<PriceDto>> getPrice(@PathVariable Long productId) {
+        PriceDto price = priceService.getPrice(productId);
+        return ResponseEntity.ok(ApiResponse.success(price));
     }
 
-    // ============================================================
-    // FX Rate Endpoints
-    // ============================================================
+    @GetMapping("/lookup")
+    @Operation(summary = "Get price by identifier (CUSIP, ISIN, etc.)")
+    public ResponseEntity<ApiResponse<PriceDto>> getPriceByIdentifier(
+            @RequestParam String identifierType,
+            @RequestParam String identifier) {
+        PriceDto price = priceService.getPriceByIdentifier(identifierType, identifier);
+        return ResponseEntity.ok(ApiResponse.success(price));
+    }
 
-    /**
-     * Get FX conversion rate between two currencies.
-     * GET /api/fx/rate?from=EUR&to=USD
-     */
-    @GetMapping("/fx/rate")
-    public ResponseEntity<Map<String, Object>> getFxRate(
+    @PostMapping("/batch")
+    @Operation(summary = "Get prices for multiple products")
+    public ResponseEntity<ApiResponse<List<PriceDto>>> getPrices(@RequestBody List<Long> productIds) {
+        List<PriceDto> prices = priceService.getPrices(productIds);
+        return ResponseEntity.ok(ApiResponse.success(prices));
+    }
+
+    @GetMapping("/stale")
+    @Operation(summary = "Get all stale prices")
+    public ResponseEntity<ApiResponse<List<PriceDto>>> getStalePrices() {
+        List<PriceDto> stalePrices = priceService.getStalePrices();
+        return ResponseEntity.ok(ApiResponse.success(stalePrices));
+    }
+
+    @PostMapping("/{productId}")
+    @Operation(summary = "Update price (for testing/manual override)")
+    public ResponseEntity<ApiResponse<PriceDto>> updatePrice(
+            @PathVariable Long productId,
+            @RequestParam BigDecimal price,
+            @RequestParam(defaultValue = "MANUAL") String source,
+            @RequestParam(defaultValue = "1") Integer priority) {
+        PriceDto updated = priceService.updatePrice(productId, price, source, priority);
+        return ResponseEntity.ok(ApiResponse.success(updated, "Price updated"));
+    }
+
+    // ==================== FX Rates ====================
+
+    @GetMapping("/fx/{currencyPair}")
+    @Operation(summary = "Get FX rate for currency pair")
+    public ResponseEntity<ApiResponse<FxRateDto>> getFxRate(@PathVariable String currencyPair) {
+        FxRateDto rate = fxRateService.getFxRate(currencyPair);
+        return ResponseEntity.ok(ApiResponse.success(rate));
+    }
+
+    @GetMapping("/fx")
+    @Operation(summary = "Get all FX rates")
+    public ResponseEntity<ApiResponse<List<FxRateDto>>> getAllFxRates() {
+        List<FxRateDto> rates = fxRateService.getAllRates();
+        return ResponseEntity.ok(ApiResponse.success(rates));
+    }
+
+    @PostMapping("/fx/batch")
+    @Operation(summary = "Get FX rates for multiple currency pairs")
+    public ResponseEntity<ApiResponse<List<FxRateDto>>> getFxRates(@RequestBody List<String> currencyPairs) {
+        List<FxRateDto> rates = fxRateService.getRates(currencyPairs);
+        return ResponseEntity.ok(ApiResponse.success(rates));
+    }
+
+    @GetMapping("/fx/convert")
+    @Operation(summary = "Get conversion rate between currencies")
+    public ResponseEntity<ApiResponse<BigDecimal>> getConversionRate(
             @RequestParam String from,
             @RequestParam String to) {
-
-        BigDecimal rate = fxCache.getConversionRate(from, to);
-
-        return ResponseEntity.ok(Map.of(
-                "from", from,
-                "to", to,
-                "rate", rate,
-                "pair", from + "/" + to
-        ));
+        BigDecimal rate = fxRateService.getConversionRate(from, to);
+        return ResponseEntity.ok(ApiResponse.success(rate));
     }
 
-    /**
-     * Get all latest FX rates.
-     * GET /api/fx/rates
-     */
-    @GetMapping("/fx/rates")
-    public ResponseEntity<List<FxRateDTO>> getAllFxRates() {
-        return ResponseEntity.ok(fxRepository.getAllLatestRates());
+    @PostMapping("/fx/{currencyPair}")
+    @Operation(summary = "Update FX rate (for testing/manual override)")
+    public ResponseEntity<ApiResponse<FxRateDto>> updateFxRate(
+            @PathVariable String currencyPair,
+            @RequestParam BigDecimal midRate,
+            @RequestParam(defaultValue = "MANUAL") String source) {
+        FxRateDto updated = fxRateService.updateFxRate(currencyPair, midRate, source);
+        return ResponseEntity.ok(ApiResponse.success(updated, "FX rate updated"));
     }
 
-    /**
-     * Convert amount between currencies.
-     * GET /api/fx/convert?from=EUR&to=USD&amount=1000
-     */
-    @GetMapping("/fx/convert")
-    public ResponseEntity<Map<String, Object>> convertCurrency(
-            @RequestParam String from,
-            @RequestParam String to,
-            @RequestParam BigDecimal amount) {
+    // ==================== Cache Management ====================
 
-        BigDecimal rate = fxCache.getConversionRate(from, to);
-        BigDecimal converted = amount.multiply(rate);
-
-        return ResponseEntity.ok(Map.of(
-                "from", from,
-                "to", to,
-                "originalAmount", amount,
-                "convertedAmount", converted,
-                "rate", rate
-        ));
+    @GetMapping("/cache/stats")
+    @Operation(summary = "Get cache statistics")
+    public ResponseEntity<ApiResponse<PriceCacheService.CacheStats>> getCacheStats() {
+        return ResponseEntity.ok(ApiResponse.success(cacheService.getStats()));
     }
 
-    // ============================================================
-    // Health/Status Endpoints
-    // ============================================================
+    @DeleteMapping("/cache/price/{productId}")
+    @Operation(summary = "Evict price from cache")
+    public ResponseEntity<ApiResponse<Void>> evictPriceCache(@PathVariable Long productId) {
+        cacheService.evictPrice(productId);
+        return ResponseEntity.ok(ApiResponse.success(null, "Price cache evicted"));
+    }
 
-    /**
-     * Get price service status and cache statistics.
-     * GET /api/prices/status
-     */
-    @GetMapping("/prices/status")
-    public ResponseEntity<Map<String, Object>> getStatus() {
-        return ResponseEntity.ok(Map.of(
-                "service", "priceservice",
-                "status", "UP",
-                "timestamp", java.time.Instant.now()
-        ));
+    @DeleteMapping("/cache/fx/{currencyPair}")
+    @Operation(summary = "Evict FX rate from cache")
+    public ResponseEntity<ApiResponse<Void>> evictFxRateCache(@PathVariable String currencyPair) {
+        cacheService.evictFxRate(currencyPair);
+        return ResponseEntity.ok(ApiResponse.success(null, "FX rate cache evicted"));
     }
 }

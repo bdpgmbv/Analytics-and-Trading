@@ -1,0 +1,138 @@
+databaseChangeLog:
+  - changeSet:
+      id: 011-create-transactions-table
+      author: vyshali
+      comment: "Create transactions table - current day transactions for Tab 2"
+      changes:
+        - createTable:
+            tableName: transactions
+            columns:
+              - column:
+                  name: transaction_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_transactions
+              - column:
+                  name: account_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_transactions_account
+                    references: accounts(account_id)
+              - column:
+                  name: product_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_transactions_product
+                    references: products(product_id)
+              - column:
+                  name: counterparty_id
+                  type: bigint
+                  constraints:
+                    foreignKeyName: fk_transactions_counterparty
+                    references: counterparties(counterparty_id)
+              - column:
+                  name: source
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: transaction_type
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: long_short
+                  type: varchar(5)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: trade_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: settle_date
+                  type: date
+              - column:
+                  name: quantity
+                  type: decimal(18,4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: price
+                  type: decimal(18,6)
+              - column:
+                  name: cost_local
+                  type: decimal(18,4)
+              - column:
+                  name: cost_settle
+                  type: decimal(18,4)
+              - column:
+                  name: fx_rate
+                  type: decimal(18,8)
+              - column:
+                  name: status
+                  type: varchar(20)
+                  defaultValue: "PENDING"
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - createIndex:
+            tableName: transactions
+            indexName: idx_transactions_account
+            columns:
+              - column:
+                  name: account_id
+
+        - createIndex:
+            tableName: transactions
+            indexName: idx_transactions_product
+            columns:
+              - column:
+                  name: product_id
+
+        - createIndex:
+            tableName: transactions
+            indexName: idx_transactions_trade_date
+            columns:
+              - column:
+                  name: trade_date
+
+        - createIndex:
+            tableName: transactions
+            indexName: idx_transactions_status
+            columns:
+              - column:
+                  name: status
+
+        # Composite index for common query: account + trade_date
+        - createIndex:
+            tableName: transactions
+            indexName: idx_transactions_account_date
+            columns:
+              - column:
+                  name: account_id
+              - column:
+                  name: trade_date
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_transactions_updated_at
+                  BEFORE UPDATE ON transactions
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_transactions_updated_at ON transactions;
+
+      rollback:
+        - dropTable:
+            tableName: transactions

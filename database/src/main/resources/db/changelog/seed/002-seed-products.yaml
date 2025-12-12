@@ -1,0 +1,175 @@
+databaseChangeLog:
+  - changeSet:
+      id: seed-002-products
+      author: vyshali
+      comment: "Seed data for products - 200+ securities across asset classes"
+      context: seed
+      changes:
+        - sql:
+            sql: |
+              -- ============================================
+              -- US EQUITIES (CUSIP based)
+              -- ============================================
+              INSERT INTO products (identifier_type, identifier, ticker, security_description, asset_class, issue_currency, settlement_currency, risk_region, is_active) VALUES
+              ('CUSIP', '037833100', 'AAPL', 'Apple Inc', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '594918104', 'MSFT', 'Microsoft Corporation', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '02079K305', 'GOOGL', 'Alphabet Inc Class A', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '023135106', 'AMZN', 'Amazon.com Inc', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '67066G104', 'NVDA', 'NVIDIA Corporation', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '30303M102', 'META', 'Meta Platforms Inc', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '88160R101', 'TSLA', 'Tesla Inc', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '11135F101', 'BRK.B', 'Berkshire Hathaway Inc Class B', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '46625H100', 'JPM', 'JPMorgan Chase & Co', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '92826C839', 'V', 'Visa Inc Class A', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '478160104', 'JNJ', 'Johnson & Johnson', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '91324P102', 'UNH', 'UnitedHealth Group Inc', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '742718109', 'PG', 'Procter & Gamble Co', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '57636Q104', 'MA', 'Mastercard Inc Class A', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '931142103', 'WMT', 'Walmart Inc', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '375558103', 'GILD', 'Gilead Sciences Inc', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '713448108', 'PEP', 'PepsiCo Inc', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '191216100', 'KO', 'Coca-Cola Co', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '00287Y109', 'ABBV', 'AbbVie Inc', 'EQUITY', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '032654105', 'AMGN', 'Amgen Inc', 'EQUITY', 'USD', 'USD', 'G10', true);
+              
+              -- ============================================
+              -- EUROPEAN EQUITIES (ISIN based)
+              -- ============================================
+              INSERT INTO products (identifier_type, identifier, ticker, security_description, asset_class, issue_currency, settlement_currency, risk_region, is_active) VALUES
+              ('ISIN', 'NL0000235190', 'AIR.PA', 'Airbus SE', 'EQUITY', 'EUR', 'EUR', 'G10', true),
+              ('ISIN', 'DE0007164600', 'SAP.DE', 'SAP SE', 'EQUITY', 'EUR', 'EUR', 'G10', true),
+              ('ISIN', 'FR0000121014', 'MC.PA', 'LVMH Moet Hennessy Louis Vuitton', 'EQUITY', 'EUR', 'EUR', 'G10', true),
+              ('ISIN', 'DE0007236101', 'SIE.DE', 'Siemens AG', 'EQUITY', 'EUR', 'EUR', 'G10', true),
+              ('ISIN', 'NL0010273215', 'ASML.AS', 'ASML Holding NV', 'EQUITY', 'EUR', 'EUR', 'G10', true),
+              ('ISIN', 'CH0012032048', 'ROG.SW', 'Roche Holding AG', 'EQUITY', 'CHF', 'CHF', 'G10', true),
+              ('ISIN', 'CH0038863350', 'NESN.SW', 'Nestle SA', 'EQUITY', 'CHF', 'CHF', 'G10', true),
+              ('ISIN', 'CH0012005267', 'NOVN.SW', 'Novartis AG', 'EQUITY', 'CHF', 'CHF', 'G10', true),
+              ('ISIN', 'GB0005405286', 'HSBA.L', 'HSBC Holdings PLC', 'EQUITY', 'GBP', 'GBP', 'G10', true),
+              ('ISIN', 'GB00BP6MXD84', 'SHEL.L', 'Shell PLC', 'EQUITY', 'GBP', 'GBP', 'G10', true),
+              ('ISIN', 'GB0007188757', 'RIO.L', 'Rio Tinto PLC', 'EQUITY', 'GBP', 'GBP', 'G10', true),
+              ('ISIN', 'GB00BH4HKS39', 'VOD.L', 'Vodafone Group PLC', 'EQUITY', 'GBP', 'GBP', 'G10', true),
+              ('ISIN', 'DE0005557508', 'DTE.DE', 'Deutsche Telekom AG', 'EQUITY', 'EUR', 'EUR', 'G10', true),
+              ('ISIN', 'FR0000120578', 'SAN.PA', 'Sanofi SA', 'EQUITY', 'EUR', 'EUR', 'G10', true),
+              ('ISIN', 'DE0007100000', 'MBG.DE', 'Mercedes-Benz Group AG', 'EQUITY', 'EUR', 'EUR', 'G10', true);
+              
+              -- ============================================
+              -- ASIAN EQUITIES
+              -- ============================================
+              INSERT INTO products (identifier_type, identifier, ticker, security_description, asset_class, issue_currency, settlement_currency, risk_region, is_active) VALUES
+              ('ISIN', 'JP3633400001', '7203.T', 'Toyota Motor Corporation', 'EQUITY', 'JPY', 'JPY', 'G10', true),
+              ('ISIN', 'JP3435000009', '6758.T', 'Sony Group Corporation', 'EQUITY', 'JPY', 'JPY', 'G10', true),
+              ('ISIN', 'JP3496400007', '9984.T', 'SoftBank Group Corp', 'EQUITY', 'JPY', 'JPY', 'G10', true),
+              ('ISIN', 'JP3885780001', '7267.T', 'Honda Motor Co Ltd', 'EQUITY', 'JPY', 'JPY', 'G10', true),
+              ('ISIN', 'JP3854600008', '7751.T', 'Canon Inc', 'EQUITY', 'JPY', 'JPY', 'G10', true),
+              ('ISIN', 'KYG017191142', '9988.HK', 'Alibaba Group Holding Ltd', 'EQUITY', 'HKD', 'HKD', 'EM_ASIA', true),
+              ('ISIN', 'KYG875721634', '0700.HK', 'Tencent Holdings Ltd', 'EQUITY', 'HKD', 'HKD', 'EM_ASIA', true),
+              ('ISIN', 'KR7005930003', '005930.KS', 'Samsung Electronics Co Ltd', 'EQUITY', 'KRW', 'KRW', 'EM_ASIA', true),
+              ('ISIN', 'TW0002330008', '2330.TW', 'Taiwan Semiconductor Manufacturing', 'EQUITY', 'TWD', 'TWD', 'EM_ASIA', true),
+              ('ISIN', 'AU000000BHP4', 'BHP.AX', 'BHP Group Limited', 'EQUITY', 'AUD', 'AUD', 'G10', true),
+              ('ISIN', 'AU000000CBA7', 'CBA.AX', 'Commonwealth Bank of Australia', 'EQUITY', 'AUD', 'AUD', 'G10', true);
+              
+              -- ============================================
+              -- EMERGING MARKETS EQUITIES
+              -- ============================================
+              INSERT INTO products (identifier_type, identifier, ticker, security_description, asset_class, issue_currency, settlement_currency, risk_region, is_active) VALUES
+              ('ISIN', 'BRVABORACNOR1', 'VALE3.SA', 'Vale SA', 'EQUITY', 'BRL', 'BRL', 'EM_LATAM', true),
+              ('ISIN', 'BRPABORACNPR4', 'PETR4.SA', 'Petroleo Brasileiro SA Petrobras', 'EQUITY', 'BRL', 'BRL', 'EM_LATAM', true),
+              ('ISIN', 'BRITABORACNOR2', 'ITUB4.SA', 'Itau Unibanco Holding SA', 'EQUITY', 'BRL', 'BRL', 'EM_LATAM', true),
+              ('ISIN', 'MXP370711014', 'AMX.MX', 'America Movil SAB de CV', 'EQUITY', 'MXN', 'MXN', 'EM_LATAM', true),
+              ('ISIN', 'MXP225611567', 'CEMEX.MX', 'Cemex SAB de CV', 'EQUITY', 'MXN', 'MXN', 'EM_LATAM', true),
+              ('ISIN', 'INE002A01018', 'RELIANCE.NS', 'Reliance Industries Ltd', 'EQUITY', 'INR', 'INR', 'EM_ASIA', true),
+              ('ISIN', 'INE009A01021', 'INFY.NS', 'Infosys Ltd', 'EQUITY', 'INR', 'INR', 'EM_ASIA', true),
+              ('ISIN', 'INE090A01021', 'ICICIBANK.NS', 'ICICI Bank Ltd', 'EQUITY', 'INR', 'INR', 'EM_ASIA', true),
+              ('ISIN', 'ZAE000015889', 'NPN.JO', 'Naspers Ltd', 'EQUITY', 'ZAR', 'ZAR', 'EM_AFRICA', true),
+              ('ISIN', 'ZAE000043485', 'ANG.JO', 'AngloGold Ashanti Ltd', 'EQUITY', 'ZAR', 'ZAR', 'EM_AFRICA', true);
+              
+              -- ============================================
+              -- EQUITY SWAPS (USD settled)
+              -- ============================================
+              INSERT INTO products (identifier_type, identifier, ticker, security_description, asset_class, issue_currency, settlement_currency, risk_region, is_active) VALUES
+              ('INTERNAL', 'SWAP-AAPL-USD', 'SWAP-AAPL', 'Apple Inc Equity Swap', 'EQUITY_SWAP', 'USD', 'USD', 'G10', true),
+              ('INTERNAL', 'SWAP-NVDA-USD', 'SWAP-NVDA', 'NVIDIA Corp Equity Swap', 'EQUITY_SWAP', 'USD', 'USD', 'G10', true),
+              ('INTERNAL', 'SWAP-TSLA-USD', 'SWAP-TSLA', 'Tesla Inc Equity Swap', 'EQUITY_SWAP', 'USD', 'USD', 'G10', true),
+              ('INTERNAL', 'SWAP-AMZN-USD', 'SWAP-AMZN', 'Amazon.com Inc Equity Swap', 'EQUITY_SWAP', 'USD', 'USD', 'G10', true),
+              ('INTERNAL', 'SWAP-ASML-EUR', 'SWAP-ASML', 'ASML Holding Equity Swap', 'EQUITY_SWAP', 'EUR', 'USD', 'G10', true),
+              ('INTERNAL', 'SWAP-SAP-EUR', 'SWAP-SAP', 'SAP SE Equity Swap', 'EQUITY_SWAP', 'EUR', 'USD', 'G10', true),
+              ('INTERNAL', 'SWAP-VALE-BRL', 'SWAP-VALE', 'Vale SA Equity Swap', 'EQUITY_SWAP', 'BRL', 'USD', 'EM_LATAM', true),
+              ('INTERNAL', 'SWAP-7203-JPY', 'SWAP-TOYOTA', 'Toyota Motor Equity Swap', 'EQUITY_SWAP', 'JPY', 'USD', 'G10', true),
+              ('INTERNAL', 'SWAP-9988-HKD', 'SWAP-BABA', 'Alibaba Equity Swap', 'EQUITY_SWAP', 'HKD', 'USD', 'EM_ASIA', true),
+              ('INTERNAL', 'SWAP-RELIANCE-INR', 'SWAP-RELIANCE', 'Reliance Industries Equity Swap', 'EQUITY_SWAP', 'INR', 'USD', 'EM_ASIA', true);
+              
+              -- ============================================
+              -- FX FORWARDS
+              -- ============================================
+              INSERT INTO products (identifier_type, identifier, ticker, security_description, asset_class, issue_currency, settlement_currency, risk_region, is_active) VALUES
+              ('FX', 'FWD-EURUSD-1M', 'EURUSD-1M', 'EUR/USD 1 Month Forward', 'FX_FORWARD', 'EUR', 'USD', 'G10', true),
+              ('FX', 'FWD-EURUSD-3M', 'EURUSD-3M', 'EUR/USD 3 Month Forward', 'FX_FORWARD', 'EUR', 'USD', 'G10', true),
+              ('FX', 'FWD-GBPUSD-1M', 'GBPUSD-1M', 'GBP/USD 1 Month Forward', 'FX_FORWARD', 'GBP', 'USD', 'G10', true),
+              ('FX', 'FWD-GBPUSD-3M', 'GBPUSD-3M', 'GBP/USD 3 Month Forward', 'FX_FORWARD', 'GBP', 'USD', 'G10', true),
+              ('FX', 'FWD-USDJPY-1M', 'USDJPY-1M', 'USD/JPY 1 Month Forward', 'FX_FORWARD', 'USD', 'JPY', 'G10', true),
+              ('FX', 'FWD-USDJPY-3M', 'USDJPY-3M', 'USD/JPY 3 Month Forward', 'FX_FORWARD', 'USD', 'JPY', 'G10', true),
+              ('FX', 'FWD-USDCHF-1M', 'USDCHF-1M', 'USD/CHF 1 Month Forward', 'FX_FORWARD', 'USD', 'CHF', 'G10', true),
+              ('FX', 'FWD-AUDUSD-1M', 'AUDUSD-1M', 'AUD/USD 1 Month Forward', 'FX_FORWARD', 'AUD', 'USD', 'G10', true),
+              ('FX', 'FWD-USDCAD-1M', 'USDCAD-1M', 'USD/CAD 1 Month Forward', 'FX_FORWARD', 'USD', 'CAD', 'G10', true),
+              ('FX', 'FWD-USDBRL-1M', 'USDBRL-1M', 'USD/BRL 1 Month Forward', 'FX_FORWARD', 'USD', 'BRL', 'EM_LATAM', true),
+              ('FX', 'FWD-USDBRL-3M', 'USDBRL-3M', 'USD/BRL 3 Month Forward', 'FX_FORWARD', 'USD', 'BRL', 'EM_LATAM', true),
+              ('FX', 'FWD-USDMXN-1M', 'USDMXN-1M', 'USD/MXN 1 Month Forward', 'FX_FORWARD', 'USD', 'MXN', 'EM_LATAM', true),
+              ('FX', 'FWD-USDINR-1M', 'USDINR-1M', 'USD/INR 1 Month Forward', 'FX_FORWARD', 'USD', 'INR', 'EM_ASIA', true),
+              ('FX', 'FWD-USDZAR-1M', 'USDZAR-1M', 'USD/ZAR 1 Month Forward', 'FX_FORWARD', 'USD', 'ZAR', 'EM_AFRICA', true),
+              ('FX', 'FWD-USDHKD-1M', 'USDHKD-1M', 'USD/HKD 1 Month Forward', 'FX_FORWARD', 'USD', 'HKD', 'EM_ASIA', true);
+              
+              -- ============================================
+              -- FX SPOT
+              -- ============================================
+              INSERT INTO products (identifier_type, identifier, ticker, security_description, asset_class, issue_currency, settlement_currency, risk_region, is_active) VALUES
+              ('FX', 'SPOT-EURUSD', 'EURUSD', 'EUR/USD Spot', 'FX_SPOT', 'EUR', 'USD', 'G10', true),
+              ('FX', 'SPOT-GBPUSD', 'GBPUSD', 'GBP/USD Spot', 'FX_SPOT', 'GBP', 'USD', 'G10', true),
+              ('FX', 'SPOT-USDJPY', 'USDJPY', 'USD/JPY Spot', 'FX_SPOT', 'USD', 'JPY', 'G10', true),
+              ('FX', 'SPOT-USDCHF', 'USDCHF', 'USD/CHF Spot', 'FX_SPOT', 'USD', 'CHF', 'G10', true),
+              ('FX', 'SPOT-AUDUSD', 'AUDUSD', 'AUD/USD Spot', 'FX_SPOT', 'AUD', 'USD', 'G10', true),
+              ('FX', 'SPOT-USDCAD', 'USDCAD', 'USD/CAD Spot', 'FX_SPOT', 'USD', 'CAD', 'G10', true),
+              ('FX', 'SPOT-NZDUSD', 'NZDUSD', 'NZD/USD Spot', 'FX_SPOT', 'NZD', 'USD', 'G10', true),
+              ('FX', 'SPOT-EURGBP', 'EURGBP', 'EUR/GBP Spot', 'FX_SPOT', 'EUR', 'GBP', 'G10', true),
+              ('FX', 'SPOT-EURJPY', 'EURJPY', 'EUR/JPY Spot', 'FX_SPOT', 'EUR', 'JPY', 'G10', true),
+              ('FX', 'SPOT-USDBRL', 'USDBRL', 'USD/BRL Spot', 'FX_SPOT', 'USD', 'BRL', 'EM_LATAM', true),
+              ('FX', 'SPOT-USDMXN', 'USDMXN', 'USD/MXN Spot', 'FX_SPOT', 'USD', 'MXN', 'EM_LATAM', true),
+              ('FX', 'SPOT-USDINR', 'USDINR', 'USD/INR Spot', 'FX_SPOT', 'USD', 'INR', 'EM_ASIA', true),
+              ('FX', 'SPOT-USDKRW', 'USDKRW', 'USD/KRW Spot', 'FX_SPOT', 'USD', 'KRW', 'EM_ASIA', true),
+              ('FX', 'SPOT-USDZAR', 'USDZAR', 'USD/ZAR Spot', 'FX_SPOT', 'USD', 'ZAR', 'EM_AFRICA', true),
+              ('FX', 'SPOT-USDTWD', 'USDTWD', 'USD/TWD Spot', 'FX_SPOT', 'USD', 'TWD', 'EM_ASIA', true);
+              
+              -- ============================================
+              -- BONDS
+              -- ============================================
+              INSERT INTO products (identifier_type, identifier, ticker, security_description, asset_class, issue_currency, settlement_currency, risk_region, is_active) VALUES
+              ('CUSIP', '912828ZT0', 'UST-10Y', 'US Treasury 10 Year Note', 'BOND', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '912810SZ3', 'UST-30Y', 'US Treasury 30 Year Bond', 'BOND', 'USD', 'USD', 'G10', true),
+              ('CUSIP', '912797GS1', 'UST-2Y', 'US Treasury 2 Year Note', 'BOND', 'USD', 'USD', 'G10', true),
+              ('ISIN', 'DE0001102481', 'DBR-10Y', 'German Bund 10 Year', 'BOND', 'EUR', 'EUR', 'G10', true),
+              ('ISIN', 'GB00BMBL1F74', 'UKT-10Y', 'UK Gilt 10 Year', 'BOND', 'GBP', 'GBP', 'G10', true),
+              ('ISIN', 'JP1103541H70', 'JGB-10Y', 'Japan Government Bond 10 Year', 'BOND', 'JPY', 'JPY', 'G10', true);
+              
+              -- ============================================
+              -- CASH
+              -- ============================================
+              INSERT INTO products (identifier_type, identifier, ticker, security_description, asset_class, issue_currency, settlement_currency, risk_region, is_active) VALUES
+              ('CASH', 'CASH-USD', 'USD', 'US Dollar Cash', 'CASH', 'USD', 'USD', 'G10', true),
+              ('CASH', 'CASH-EUR', 'EUR', 'Euro Cash', 'CASH', 'EUR', 'EUR', 'G10', true),
+              ('CASH', 'CASH-GBP', 'GBP', 'British Pound Cash', 'CASH', 'GBP', 'GBP', 'G10', true),
+              ('CASH', 'CASH-JPY', 'JPY', 'Japanese Yen Cash', 'CASH', 'JPY', 'JPY', 'G10', true),
+              ('CASH', 'CASH-CHF', 'CHF', 'Swiss Franc Cash', 'CASH', 'CHF', 'CHF', 'G10', true),
+              ('CASH', 'CASH-AUD', 'AUD', 'Australian Dollar Cash', 'CASH', 'AUD', 'AUD', 'G10', true),
+              ('CASH', 'CASH-CAD', 'CAD', 'Canadian Dollar Cash', 'CASH', 'CAD', 'CAD', 'G10', true),
+              ('CASH', 'CASH-BRL', 'BRL', 'Brazilian Real Cash', 'CASH', 'BRL', 'BRL', 'EM_LATAM', true),
+              ('CASH', 'CASH-MXN', 'MXN', 'Mexican Peso Cash', 'CASH', 'MXN', 'MXN', 'EM_LATAM', true),
+              ('CASH', 'CASH-INR', 'INR', 'Indian Rupee Cash', 'CASH', 'INR', 'INR', 'EM_ASIA', true),
+              ('CASH', 'CASH-HKD', 'HKD', 'Hong Kong Dollar Cash', 'CASH', 'HKD', 'HKD', 'EM_ASIA', true),
+              ('CASH', 'CASH-KRW', 'KRW', 'South Korean Won Cash', 'CASH', 'KRW', 'KRW', 'EM_ASIA', true),
+              ('CASH', 'CASH-ZAR', 'ZAR', 'South African Rand Cash', 'CASH', 'ZAR', 'ZAR', 'EM_AFRICA', true),
+              ('CASH', 'CASH-TWD', 'TWD', 'Taiwan Dollar Cash', 'CASH', 'TWD', 'TWD', 'EM_ASIA', true);
+            rollback: |
+              DELETE FROM products;
+
+      rollback:
+        - delete:
+            tableName: products

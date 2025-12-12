@@ -1,0 +1,111 @@
+databaseChangeLog:
+  - changeSet:
+      id: 004-create-products-table
+      author: vyshali
+      comment: "Create products table - security master for all tradeable instruments"
+      changes:
+        - createTable:
+            tableName: products
+            columns:
+              - column:
+                  name: product_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_products
+              - column:
+                  name: identifier_type
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: identifier
+                  type: varchar(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: ticker
+                  type: varchar(20)
+              - column:
+                  name: security_description
+                  type: varchar(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: asset_class
+                  type: varchar(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: issue_currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: settlement_currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: risk_region
+                  type: varchar(50)
+              - column:
+                  name: is_active
+                  type: boolean
+                  defaultValueBoolean: true
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - addUniqueConstraint:
+            tableName: products
+            columnNames: identifier_type, identifier
+            constraintName: uq_products_identifier
+
+        - createIndex:
+            tableName: products
+            indexName: idx_products_identifier
+            columns:
+              - column:
+                  name: identifier_type
+              - column:
+                  name: identifier
+
+        - createIndex:
+            tableName: products
+            indexName: idx_products_asset_class
+            columns:
+              - column:
+                  name: asset_class
+
+        - createIndex:
+            tableName: products
+            indexName: idx_products_issue_ccy
+            columns:
+              - column:
+                  name: issue_currency
+
+        - createIndex:
+            tableName: products
+            indexName: idx_products_ticker
+            columns:
+              - column:
+                  name: ticker
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_products_updated_at
+                  BEFORE UPDATE ON products
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_products_updated_at ON products;
+
+      rollback:
+        - dropTable:
+            tableName: products

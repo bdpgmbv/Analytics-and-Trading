@@ -1,26 +1,53 @@
 server:
-  port: 8082  # Distinct port for Trade Fill Processor
+  port: 8083
+  servlet:
+    context-path: /
 
 spring:
   application:
-    name: tradefillprocessor
+    name: trade-fill-processor
 
-  threads:
-    virtual:
-      enabled: true
+  profiles:
+    include: common
 
-  # --- Kafka Configuration ---
+  # Database
+  datasource:
+    url: jdbc:postgresql://localhost:5432/fxanalyzer
+    username: fxanalyzer
+    password: fxanalyzer
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      maximum-pool-size: 10
+      minimum-idle: 5
+      pool-name: trade-fill-processor-pool
+
+  # JPA
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  # Kafka - Critical for trade fill processing
   kafka:
-    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    bootstrap-servers: localhost:9092
     consumer:
-      group-id: trade-processor-group
+      group-id: trade-fill-processor-group
       auto-offset-reset: earliest
       enable-auto-commit: false
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
+        spring.json.trusted.packages: com.vyshali.fxanalyzer.*
         max.poll.records: 100
         session.timeout.ms: 30000
+        heartbeat.interval.ms: 10000
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
@@ -28,112 +55,91 @@ spring:
       retries: 3
       properties:
         enable.idempotence: true
+        max.in.flight.requests.per.connection: 1
     listener:
-      ack-mode: MANUAL_IMMEDIATE
-      concurrency: 3
+      concurrency: 2
+      ack-mode: manual_immediate
 
-  # --- Database Configuration ---
-  datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/analyticsandtrading}
-    username: ${DB_USER:postgres}
-    password: ${DB_PASS:password}
-    driver-class-name: org.postgresql.Driver
-    hikari:
-      maximum-pool-size: 20
-      minimum-idle: 5
-      connection-timeout: 30000
-      idle-timeout: 600000
-      max-lifetime: 1800000
-      pool-name: TradeFillPool
-
-  # --- FIXED: Use common schema from shared library ---
-  liquibase:
-    change-log: classpath:db/changelog/db.changelog-master.yaml
-    enabled: true
-    contexts: dev,test
-
-  # --- Redis Configuration ---
-  data:
-    redis:
-      host: ${SPRING_DATA_REDIS_HOST:localhost}
-      port: ${SPRING_DATA_REDIS_PORT:6379}
-      timeout: 2000ms
-      lettuce:
-        pool:
-          max-active: 10
-          max-idle: 5
-          min-idle: 2
-
-  # --- Jackson Configuration ---
-  jackson:
-    serialization:
-      write-dates-as-timestamps: false
-    deserialization:
-      fail-on-unknown-properties: false
-
-# --- Observability ---
+# Management endpoints
 management:
   endpoints:
     web:
       exposure:
-        include: "health,metrics,prometheus,info"
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: when_authorized
-      probes:
-        enabled: true
-  tracing:
-    sampling:
-      probability: 1.0
-  zipkin:
-    tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://tempo:9411/api/v2/spans}
   metrics:
     tags:
       application: ${spring.application.name}
 
-# --- Application Configuration ---
-app:
-  trade:
-    # VWAP calculation window
-    aggregation-window-ms: 5000
-    # Maximum fills to aggregate before forcing flush
-    max-fills-per-order: 100
-    # Orphan detection threshold
-    orphan-threshold-minutes: 30
-
-  # Dead Letter Queue settings
-  dlq:
-    max-retries: 3
-    retry-delay-ms: 1000
-    topic-suffix: ".DLQ"
-
-# --- Logging ---
+# Logging
 logging:
   level:
-    com.vyshali.tradefillprocessor: DEBUG
+    root: INFO
+    com.vyshali.fxanalyzer: DEBUG
+    org.apache.kafka: WARN
     org.springframework.kafka: INFO
-    org.springframework.jdbc: DEBUG
   pattern:
-    console: "%d{HH:mm:ss.SSS} [%thread] [%X{traceId},%X{spanId}] %-5level %logger{36} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# FX Analyzer Trade Fill Processor Configuration
+fxanalyzer:
+  # Kafka topics
+  kafka:
+    topics:
+      fills: fxmatrix.trades.fills          # Incoming fills from FXMatrix
+      fills-dlt: fxmatrix.trades.fills.DLT  # Dead letter queue
+      processed: fxanalyzer.trades.processed # Outgoing processed events
+
+  # Trade execution configuration
+  trade:
+    execution-timeout-minutes: 5           # Time to wait for FXMatrix response
+    stale-check-interval-ms: 60000         # Check for stale trades every minute
+
+# SpringDoc OpenAPI
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
 
 ---
-# Production Profile
+# Development profile
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  jpa:
+    show-sql: true
+
+logging:
+  level:
+    org.hibernate.SQL: DEBUG
+    org.springframework.kafka: DEBUG
+
+---
+# Production profile
 spring:
   config:
     activate:
       on-profile: prod
 
-  liquibase:
-    contexts: prod
+  datasource:
+    hikari:
+      maximum-pool-size: 15
+      minimum-idle: 5
+
+  kafka:
+    listener:
+      concurrency: 4
+
+fxanalyzer:
+  trade:
+    execution-timeout-minutes: 3  # Shorter timeout in prod
 
 logging:
   level:
-    com.vyshali.tradefillprocessor: INFO
-    org.springframework.kafka: WARN
-    org.springframework.jdbc: WARN
-
-management:
-  tracing:
-    sampling:
-      probability: 0.1  # Sample 10% in production
+    root: WARN
+    com.vyshali.fxanalyzer: INFO

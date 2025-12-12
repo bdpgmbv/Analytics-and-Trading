@@ -1,0 +1,155 @@
+databaseChangeLog:
+  - changeSet:
+      id: 013-create-trade-executions-table
+      author: vyshali
+      comment: "Create trade_executions table - SOLVES ISSUE #2: tracking of trades sent to FX Matrix"
+      changes:
+        - createTable:
+            tableName: trade_executions
+            columns:
+              - column:
+                  name: execution_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_trade_executions
+              - column:
+                  name: account_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_executions_account
+                    references: accounts(account_id)
+              - column:
+                  name: counterparty_id
+                  type: bigint
+                  constraints:
+                    foreignKeyName: fk_executions_counterparty
+                    references: counterparties(counterparty_id)
+              - column:
+                  name: execution_ref
+                  type: varchar(50)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uq_executions_ref
+              - column:
+                  name: trade_type
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: buy_currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sell_currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: buy_amount
+                  type: decimal(18,4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sell_amount
+                  type: decimal(18,4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: execution_rate
+                  type: decimal(18,8)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: value_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sent_at
+                  type: timestamp
+                  constraints:
+                    nullable: false
+              - column:
+                  name: executed_at
+                  type: timestamp
+              - column:
+                  name: status
+                  type: varchar(20)
+                  defaultValue: "SENT"
+              - column:
+                  name: error_message
+                  type: text
+              - column:
+                  name: source_tab
+                  type: varchar(30)
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - createIndex:
+            tableName: trade_executions
+            indexName: idx_executions_account
+            columns:
+              - column:
+                  name: account_id
+
+        - createIndex:
+            tableName: trade_executions
+            indexName: idx_executions_status
+            columns:
+              - column:
+                  name: status
+
+        - createIndex:
+            tableName: trade_executions
+            indexName: idx_executions_sent_at
+            columns:
+              - column:
+                  name: sent_at
+
+        - createIndex:
+            tableName: trade_executions
+            indexName: idx_executions_value_date
+            columns:
+              - column:
+                  name: value_date
+
+        # Composite index for status monitoring
+        - createIndex:
+            tableName: trade_executions
+            indexName: idx_executions_account_status
+            columns:
+              - column:
+                  name: account_id
+              - column:
+                  name: status
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_trade_executions_updated_at
+                  BEFORE UPDATE ON trade_executions
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_trade_executions_updated_at ON trade_executions;
+
+        # Add comment to highlight this solves Issue #2
+        - sql:
+            sql: |
+              COMMENT ON TABLE trade_executions IS 
+              'Tracks all FX trades sent to and executed via FX Matrix. SOLVES ISSUE #2: provides full audit trail of SENT, EXECUTED, REJECTED, FAILED trades.';
+            rollback: |
+              COMMENT ON TABLE trade_executions IS NULL;
+
+      rollback:
+        - dropTable:
+            tableName: trade_executions

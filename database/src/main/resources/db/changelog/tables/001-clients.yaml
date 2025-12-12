@@ -1,0 +1,68 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-create-clients-table
+      author: vyshali
+      comment: "Create clients table - top level entity for hedge fund clients"
+      changes:
+        - createTable:
+            tableName: clients
+            columns:
+              - column:
+                  name: client_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_clients
+              - column:
+                  name: client_code
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uq_clients_code
+              - column:
+                  name: client_name
+                  type: varchar(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(20)
+                  defaultValue: "ACTIVE"
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+        
+        - createIndex:
+            tableName: clients
+            indexName: idx_clients_status
+            columns:
+              - column:
+                  name: status
+
+        - sql:
+            comment: "Create trigger to auto-update updated_at"
+            sql: |
+              CREATE OR REPLACE FUNCTION update_updated_at_column()
+              RETURNS TRIGGER AS $$
+              BEGIN
+                  NEW.updated_at = CURRENT_TIMESTAMP;
+                  RETURN NEW;
+              END;
+              $$ language 'plpgsql';
+              
+              CREATE TRIGGER update_clients_updated_at
+                  BEFORE UPDATE ON clients
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_clients_updated_at ON clients;
+
+      rollback:
+        - dropTable:
+            tableName: clients

@@ -1,0 +1,332 @@
+databaseChangeLog:
+  - changeSet:
+      id: seed-001-clients
+      author: vyshali
+      comment: "Seed data for clients - 50 realistic hedge fund clients"
+      context: seed
+      changes:
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "APEX001" }
+              - column: { name: client_name, value: "Apex Capital Partners" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "BRIDGE002" }
+              - column: { name: client_name, value: "Bridgewater Associates" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "CITADEL003" }
+              - column: { name: client_name, value: "Citadel Investment Group" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "DESHAW004" }
+              - column: { name: client_name, value: "D.E. Shaw & Co" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "ELLIOTT005" }
+              - column: { name: client_name, value: "Elliott Management Corp" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "FALCON006" }
+              - column: { name: client_name, value: "Falcon Edge Capital" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "GLADST007" }
+              - column: { name: client_name, value: "Gladstone Capital Partners" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "HUDSON008" }
+              - column: { name: client_name, value: "Hudson Bay Capital Management" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "ICAHN009" }
+              - column: { name: client_name, value: "Icahn Enterprises LP" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "JADE010" }
+              - column: { name: client_name, value: "Jade Capital Advisors" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "KINGS011" }
+              - column: { name: client_name, value: "Kingstown Capital Management" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "LONEL012" }
+              - column: { name: client_name, value: "Lone Pine Capital" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "MILL013" }
+              - column: { name: client_name, value: "Millennium Management" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "NOBLE014" }
+              - column: { name: client_name, value: "Noble Investment Partners" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "ORBIT015" }
+              - column: { name: client_name, value: "Orbit Capital Management" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "PERSH016" }
+              - column: { name: client_name, value: "Pershing Square Capital" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "QUEST017" }
+              - column: { name: client_name, value: "Quest Partners LLC" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "RENAI018" }
+              - column: { name: client_name, value: "Renaissance Technologies" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "SOROS019" }
+              - column: { name: client_name, value: "Soros Fund Management" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "TIGER020" }
+              - column: { name: client_name, value: "Tiger Global Management" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "UNION021" }
+              - column: { name: client_name, value: "Union Square Ventures" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "VIKING022" }
+              - column: { name: client_name, value: "Viking Global Investors" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "WELLS023" }
+              - column: { name: client_name, value: "Wellington Management" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "XENOS024" }
+              - column: { name: client_name, value: "Xenos Capital Partners" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "YORK025" }
+              - column: { name: client_name, value: "York Capital Management" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "ZENITH026" }
+              - column: { name: client_name, value: "Zenith Asset Management" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "ANCHOR027" }
+              - column: { name: client_name, value: "Anchorage Capital Group" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "BEACON028" }
+              - column: { name: client_name, value: "Beacon Capital Partners" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "CANYON029" }
+              - column: { name: client_name, value: "Canyon Capital Advisors" }
+              - column: { name: status, value: "ACTIVE" }
+        - insert:
+            tableName: clients
+            columns:
+              - column: { name: client_code, value: "DIAMOND030" }
+              - column: { name: client_name, value: "Diamond Hill Capital" }
+              - column: { name: status, value: "ACTIVE" }
+
+        # Insert funds for each client (2-3 funds per client)
+        - sql:
+            sql: |
+              -- Funds for Apex Capital
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'APEX-GLB-EQ', 'Apex Global Equity Fund', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'APEX001';
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'APEX-EM-MACRO', 'Apex EM Macro Fund', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'APEX001';
+              
+              -- Funds for Bridgewater
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'BW-ALL-WEATH', 'Bridgewater All Weather Fund', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'BRIDGE002';
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'BW-PURE-ALPH', 'Bridgewater Pure Alpha Fund', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'BRIDGE002';
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'BW-OPT-PORT', 'Bridgewater Optimal Portfolio', 'EUR', 'ACTIVE' FROM clients WHERE client_code = 'BRIDGE002';
+              
+              -- Funds for Citadel
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'CIT-WELLINGTON', 'Citadel Wellington Fund', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'CITADEL003';
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'CIT-KENSINGTON', 'Citadel Kensington Fund', 'GBP', 'ACTIVE' FROM clients WHERE client_code = 'CITADEL003';
+              
+              -- Funds for DE Shaw
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'DES-COMPOSITE', 'DE Shaw Composite Fund', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'DESHAW004';
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'DES-OCULUS', 'DE Shaw Oculus Fund', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'DESHAW004';
+              
+              -- Funds for Elliott
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'ELL-INTL', 'Elliott International LP', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'ELLIOTT005';
+              
+              -- Funds for Renaissance
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'REN-MEDALLION', 'Renaissance Medallion Fund', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'RENAI018';
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'REN-INST-EQ', 'Renaissance Institutional Equities', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'RENAI018';
+              
+              -- Funds for Tiger Global
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'TGM-LONG-OPP', 'Tiger Global Long Opportunities', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'TIGER020';
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'TGM-PIP', 'Tiger Global Private Investment Partners', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'TIGER020';
+              
+              -- Funds for Viking
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'VIK-GLOBAL-EQ', 'Viking Global Equities LP', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'VIKING022';
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'VIK-LONG-FUND', 'Viking Long Fund LP', 'EUR', 'ACTIVE' FROM clients WHERE client_code = 'VIKING022';
+              
+              -- Funds for Millennium
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'MLP-INTL', 'Millennium International LP', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'MILL013';
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'MLP-USA', 'Millennium USA LP', 'USD', 'ACTIVE' FROM clients WHERE client_code = 'MILL013';
+              INSERT INTO funds (client_id, fund_code, fund_name, base_currency, status)
+              SELECT client_id, 'MLP-ASIA', 'Millennium Asia LP', 'JPY', 'ACTIVE' FROM clients WHERE client_code = 'MILL013';
+            rollback: |
+              DELETE FROM funds;
+
+        # Insert accounts for each fund (2-4 accounts per fund)
+        - sql:
+            sql: |
+              -- Accounts for Apex Global Equity Fund
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-APEX-GLB-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'APEX-GLB-EQ';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-APEX-GLB-002', 'MARGIN', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'APEX-GLB-EQ';
+              
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-APEX-EM-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'APEX-EM-MACRO';
+              
+              -- Accounts for Bridgewater funds
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-BW-AW-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'BW-ALL-WEATH';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-BW-AW-002', 'PRIME', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'BW-ALL-WEATH';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-BW-AW-003', 'DVP', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'BW-ALL-WEATH';
+              
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-BW-PA-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'BW-PURE-ALPH';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-BW-PA-002', 'MARGIN', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'BW-PURE-ALPH';
+              
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-BW-OP-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'BW-OPT-PORT';
+              
+              -- Accounts for Citadel funds
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-CIT-WEL-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'CIT-WELLINGTON';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-CIT-WEL-002', 'PRIME', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'CIT-WELLINGTON';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-CIT-WEL-003', 'MARGIN', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'CIT-WELLINGTON';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-CIT-WEL-004', 'DVP', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'CIT-WELLINGTON';
+              
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-CIT-KEN-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'CIT-KENSINGTON';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-CIT-KEN-002', 'PRIME', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'CIT-KENSINGTON';
+              
+              -- Accounts for Renaissance funds
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-REN-MED-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'REN-MEDALLION';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-REN-MED-002', 'PRIME', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'REN-MEDALLION';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-REN-MED-003', 'MARGIN', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'REN-MEDALLION';
+              
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-REN-IEQ-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'REN-INST-EQ';
+              
+              -- Accounts for Tiger Global
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-TGM-LO-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'TGM-LONG-OPP';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-TGM-LO-002', 'PRIME', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'TGM-LONG-OPP';
+              
+              -- Accounts for Millennium
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-MLP-INT-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'MLP-INTL';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-MLP-INT-002', 'PRIME', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'MLP-INTL';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-MLP-INT-003', 'MARGIN', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'MLP-INTL';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-MLP-USA-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'MLP-USA';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-MLP-ASIA-001', 'CUSTODY', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'MLP-ASIA';
+              INSERT INTO accounts (fund_id, account_number, account_type, source_system, status)
+              SELECT fund_id, 'MS-MLP-ASIA-002', 'PRIME', 'MSPM', 'ACTIVE' FROM funds WHERE fund_code = 'MLP-ASIA';
+            rollback: |
+              DELETE FROM accounts;
+
+      rollback:
+        - delete:
+            tableName: accounts
+        - delete:
+            tableName: funds
+        - delete:
+            tableName: clients

@@ -1,0 +1,99 @@
+databaseChangeLog:
+  - changeSet:
+      id: 010-create-cash-balances-table
+      author: vyshali
+      comment: "Create cash_balances table - for Tab 4 Cash Management"
+      changes:
+        - createTable:
+            tableName: cash_balances
+            columns:
+              - column:
+                  name: cash_balance_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_cash_balances
+              - column:
+                  name: account_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_cash_balances_account
+                    references: accounts(account_id)
+              - column:
+                  name: currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: balance_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: cash_balance
+                  type: decimal(18,4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: unhedged_exposure
+                  type: decimal(18,4)
+              - column:
+                  name: trade_type
+                  type: varchar(20)
+              - column:
+                  name: spot_amount
+                  type: decimal(18,4)
+              - column:
+                  name: forward_amount
+                  type: decimal(18,4)
+              - column:
+                  name: value_date
+                  type: date
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - addUniqueConstraint:
+            tableName: cash_balances
+            columnNames: account_id, currency, balance_date
+            constraintName: uq_cash_balances_account_ccy_date
+
+        - createIndex:
+            tableName: cash_balances
+            indexName: idx_cash_balances_account
+            columns:
+              - column:
+                  name: account_id
+
+        - createIndex:
+            tableName: cash_balances
+            indexName: idx_cash_balances_currency
+            columns:
+              - column:
+                  name: currency
+
+        - createIndex:
+            tableName: cash_balances
+            indexName: idx_cash_balances_date
+            columns:
+              - column:
+                  name: balance_date
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_cash_balances_updated_at
+                  BEFORE UPDATE ON cash_balances
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_cash_balances_updated_at ON cash_balances;
+
+      rollback:
+        - dropTable:
+            tableName: cash_balances

@@ -1,57 +1,51 @@
 plugins {
     java
-    id("org.springframework.boot")
-    id("io.spring.dependency-management")
-}
-
-group = "com.vyshali.tradefillprocessor"
-
-java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    toolchain { languageVersion.set(JavaLanguageVersion.of(21)) }
+    id("org.springframework.boot") version "3.2.1"
+    id("io.spring.dependency-management") version "1.1.4"
 }
 
 dependencies {
-    // CRITICAL: Shared library with schema definitions
+    // Internal modules
     implementation(project(":common"))
-
-    // Web & Data
+    
+    // Spring Boot starters
     implementation("org.springframework.boot:spring-boot-starter-web")
-    implementation("org.springframework.boot:spring-boot-starter-data-redis")
-    implementation("org.springframework.boot:spring-boot-starter-jdbc")
-    implementation("org.springframework.boot:spring-boot-starter-actuator")
+    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     implementation("org.springframework.boot:spring-boot-starter-validation")
-
-    // Messaging
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
+    
+    // Kafka - core for receiving trade fills from FX Matrix
     implementation("org.springframework.kafka:spring-kafka")
-    implementation("com.fasterxml.jackson.core:jackson-databind")
-    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
-
+    
     // Database
-    runtimeOnly("org.postgresql:postgresql")
-    implementation("com.zaxxer:HikariCP")
-
-    // Observability
+    implementation("org.postgresql:postgresql:42.7.1")
+    
+    // Resilience - for handling downstream failures when sending to custody/fx cash/TM
+    implementation("io.github.resilience4j:resilience4j-spring-boot3:2.2.0")
+    implementation("io.github.resilience4j:resilience4j-circuitbreaker:2.2.0")
+    implementation("io.github.resilience4j:resilience4j-retry:2.2.0")
+    implementation("io.github.resilience4j:resilience4j-bulkhead:2.2.0")
+    
+    // Caching
+    implementation("org.springframework.boot:spring-boot-starter-cache")
+    implementation("org.springframework.boot:spring-boot-starter-data-redis")
+    
+    // Monitoring - critical for tracking trade execution status (Issue #2)
     implementation("io.micrometer:micrometer-registry-prometheus")
-    implementation("io.micrometer:micrometer-tracing-bridge-brave")
-    implementation("io.zipkin.reporter2:zipkin-reporter-brave")
-    implementation("net.logstash.logback:logstash-logback-encoder:7.4")
-
-    // Tools
-    compileOnly("org.projectlombok:lombok")
-    annotationProcessor("org.projectlombok:lombok")
-
+    
+    // JSON processing
+    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
+    
     // Testing
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.kafka:spring-kafka-test")
-    testImplementation("org.testcontainers:postgresql")
-    testImplementation("org.testcontainers:kafka")
+    testImplementation("com.h2database:h2:2.2.224")
+    testImplementation("org.testcontainers:junit-jupiter:1.19.3")
+    testImplementation("org.testcontainers:postgresql:1.19.3")
+    testImplementation("org.testcontainers:kafka:1.19.3")
+    testImplementation("org.awaitility:awaitility:4.2.0")
 }
 
-dependencyManagement {
-    imports { mavenBom("org.springframework.cloud:spring-cloud-dependencies:2023.0.0") }
-}
-
-tasks.test {
-    useJUnitPlatform()
+springBoot {
+    mainClass.set("com.vyshali.fxanalyzer.tradefillprocessor.TradeFillProcessorApplication")
 }

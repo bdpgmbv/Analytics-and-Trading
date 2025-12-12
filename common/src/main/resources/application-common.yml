@@ -1,0 +1,92 @@
+# Common configuration shared across all FX Analyzer services
+
+spring:
+  # JPA / Hibernate configuration
+  jpa:
+    hibernate:
+      ddl-auto: validate  # Schema managed by Liquibase
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+    open-in-view: false
+
+  # Jackson JSON configuration
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: false
+    deserialization:
+      fail-on-unknown-properties: false
+    date-format: yyyy-MM-dd'T'HH:mm:ss.SSS'Z'
+
+  # Cache configuration
+  cache:
+    type: caffeine
+    caffeine:
+      spec: maximumSize=10000,expireAfterWrite=5m
+
+# Logging configuration
+logging:
+  level:
+    root: INFO
+    com.vyshali.fxanalyzer: DEBUG
+    org.springframework.cache: DEBUG
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# Management endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,caches
+  endpoint:
+    health:
+      show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+# FX Analyzer custom configuration
+fxanalyzer:
+  # Price configuration
+  price:
+    staleness-threshold-minutes: 30
+    cache-ttl-seconds: 30
+    fallback-enabled: true
+  
+  # FX Rate configuration
+  fx-rate:
+    cache-ttl-seconds: 60
+    supported-pairs:
+      - EURUSD
+      - GBPUSD
+      - USDJPY
+      - USDCHF
+      - AUDUSD
+      - USDCAD
+      - NZDUSD
+      - USDBRL
+      - USDMXN
+      - USDINR
+      - USDZAR
+  
+  # Position configuration
+  position:
+    snapshot-retention-days: 7
+    cache-ttl-minutes: 5
+  
+  # Trade execution configuration
+  trade:
+    execution-timeout-seconds: 30
+    max-retry-attempts: 3
+    stale-pending-threshold-minutes: 5

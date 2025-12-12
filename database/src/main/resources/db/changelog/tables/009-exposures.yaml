@@ -1,0 +1,98 @@
+databaseChangeLog:
+  - changeSet:
+      id: 009-create-exposures-table
+      author: vyshali
+      comment: "Create exposures table - generic/specific currency exposures per position"
+      changes:
+        - createTable:
+            tableName: exposures
+            columns:
+              - column:
+                  name: exposure_id
+                  type: bigserial
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_exposures
+              - column:
+                  name: position_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_exposures_position
+                    references: positions(position_id)
+                    deleteCascade: true
+              - column:
+                  name: product_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    foreignKeyName: fk_exposures_product
+                    references: products(product_id)
+              - column:
+                  name: exposure_type
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: currency
+                  type: varchar(3)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: weight_percent
+                  type: decimal(8,4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: exposure_amount_local
+                  type: decimal(18,4)
+              - column:
+                  name: exposure_amount_base
+                  type: decimal(18,4)
+              - column:
+                  name: created_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+              - column:
+                  name: updated_at
+                  type: timestamp
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - addUniqueConstraint:
+            tableName: exposures
+            columnNames: position_id, exposure_type, currency
+            constraintName: uq_exposures_position_type_ccy
+
+        - createIndex:
+            tableName: exposures
+            indexName: idx_exposures_position
+            columns:
+              - column:
+                  name: position_id
+
+        - createIndex:
+            tableName: exposures
+            indexName: idx_exposures_currency
+            columns:
+              - column:
+                  name: currency
+
+        - createIndex:
+            tableName: exposures
+            indexName: idx_exposures_type
+            columns:
+              - column:
+                  name: exposure_type
+
+        - sql:
+            sql: |
+              CREATE TRIGGER update_exposures_updated_at
+                  BEFORE UPDATE ON exposures
+                  FOR EACH ROW
+                  EXECUTE FUNCTION update_updated_at_column();
+            rollback: |
+              DROP TRIGGER IF EXISTS update_exposures_updated_at ON exposures;
+
+      rollback:
+        - dropTable:
+            tableName: exposures

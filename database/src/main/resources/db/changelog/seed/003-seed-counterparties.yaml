@@ -1,0 +1,127 @@
+databaseChangeLog:
+  - changeSet:
+      id: seed-003-counterparties
+      author: vyshali
+      comment: "Seed data for counterparties - major trading counterparties"
+      context: seed
+      changes:
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "MS" }
+              - column: { name: counterparty_name, value: "Morgan Stanley" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "GS" }
+              - column: { name: counterparty_name, value: "Goldman Sachs" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "JPM" }
+              - column: { name: counterparty_name, value: "JPMorgan Chase" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "BARC" }
+              - column: { name: counterparty_name, value: "Barclays" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "CITI" }
+              - column: { name: counterparty_name, value: "Citigroup" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "DB" }
+              - column: { name: counterparty_name, value: "Deutsche Bank" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "UBS" }
+              - column: { name: counterparty_name, value: "UBS Group" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "CS" }
+              - column: { name: counterparty_name, value: "Credit Suisse" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "HSBC" }
+              - column: { name: counterparty_name, value: "HSBC Holdings" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "BNP" }
+              - column: { name: counterparty_name, value: "BNP Paribas" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "SOCGEN" }
+              - column: { name: counterparty_name, value: "Societe Generale" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "BOFA" }
+              - column: { name: counterparty_name, value: "Bank of America" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "RBC" }
+              - column: { name: counterparty_name, value: "Royal Bank of Canada" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "NOMURA" }
+              - column: { name: counterparty_name, value: "Nomura Holdings" }
+              - column: { name: is_active, valueBoolean: true }
+        - insert:
+            tableName: counterparties
+            columns:
+              - column: { name: counterparty_code, value: "MIZUHO" }
+              - column: { name: counterparty_name, value: "Mizuho Financial Group" }
+              - column: { name: is_active, valueBoolean: true }
+              
+        # Insert FX rates seed data
+        - sql:
+            sql: |
+              -- Current FX rates (today's date would be dynamic in real scenario)
+              INSERT INTO fx_rates (currency_pair, base_currency, quote_currency, rate_date, mid_rate, bid_rate, ask_rate, forward_points_1m, forward_points_3m, source, is_stale) VALUES
+              ('EURUSD', 'EUR', 'USD', CURRENT_DATE, 1.08750, 1.08745, 1.08755, 0.00012, 0.00038, 'REALTIME', false),
+              ('GBPUSD', 'GBP', 'USD', CURRENT_DATE, 1.26340, 1.26335, 1.26345, 0.00008, 0.00025, 'REALTIME', false),
+              ('USDJPY', 'USD', 'JPY', CURRENT_DATE, 149.8500, 149.8450, 149.8550, -0.0850, -0.2650, 'REALTIME', false),
+              ('USDCHF', 'USD', 'CHF', CURRENT_DATE, 0.88230, 0.88225, 0.88235, -0.00085, -0.00260, 'REALTIME', false),
+              ('AUDUSD', 'AUD', 'USD', CURRENT_DATE, 0.65120, 0.65115, 0.65125, 0.00018, 0.00055, 'REALTIME', false),
+              ('USDCAD', 'USD', 'CAD', CURRENT_DATE, 1.35780, 1.35775, 1.35785, 0.00025, 0.00078, 'REALTIME', false),
+              ('NZDUSD', 'NZD', 'USD', CURRENT_DATE, 0.60850, 0.60845, 0.60855, 0.00022, 0.00068, 'REALTIME', false),
+              ('EURGBP', 'EUR', 'GBP', CURRENT_DATE, 0.86050, 0.86045, 0.86055, 0.00005, 0.00015, 'REALTIME', false),
+              ('EURJPY', 'EUR', 'JPY', CURRENT_DATE, 162.9500, 162.9400, 162.9600, -0.0650, -0.2000, 'REALTIME', false),
+              ('USDBRL', 'USD', 'BRL', CURRENT_DATE, 4.97500, 4.97400, 4.97600, 0.02500, 0.07800, 'REALTIME', false),
+              ('USDMXN', 'USD', 'MXN', CURRENT_DATE, 17.1250, 17.1200, 17.1300, 0.01500, 0.04700, 'REALTIME', false),
+              ('USDINR', 'USD', 'INR', CURRENT_DATE, 83.2500, 83.2400, 83.2600, 0.08500, 0.26500, 'REALTIME', false),
+              ('USDKRW', 'USD', 'KRW', CURRENT_DATE, 1312.50, 1312.40, 1312.60, 1.25000, 3.85000, 'REALTIME', false),
+              ('USDZAR', 'USD', 'ZAR', CURRENT_DATE, 18.7500, 18.7400, 18.7600, 0.05500, 0.17200, 'REALTIME', false),
+              ('USDHKD', 'USD', 'HKD', CURRENT_DATE, 7.81500, 7.81450, 7.81550, -0.00150, -0.00450, 'REALTIME', false),
+              ('USDTWD', 'USD', 'TWD', CURRENT_DATE, 31.5500, 31.5400, 31.5600, 0.02800, 0.08700, 'REALTIME', false);
+            rollback: |
+              DELETE FROM fx_rates;
+
+      rollback:
+        - delete:
+            tableName: fx_rates
+        - delete:
+            tableName: counterparties
