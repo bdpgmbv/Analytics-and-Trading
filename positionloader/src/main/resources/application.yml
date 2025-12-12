@@ -1,158 +1,209 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# FX Analyzer - Position Loader Service Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+
 spring:
   application:
-    name: position-loader
-  
+    name: fxan-position-loader
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Database Configuration
+  # ─────────────────────────────────────────────────────────────────────────────
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:positionloader}
-    username: ${DB_USER:postgres}
-    password: ${DB_PASS:postgres}
-    driver-class-name: org.postgresql.Driver
+    url: jdbc:db2://localhost:50000/fxandb
+    username: ${DB_USERNAME:fxan_user}
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.ibm.db2.jcc.DB2Driver
     hikari:
+      pool-name: fxan-loader-pool
       maximum-pool-size: 20
       minimum-idle: 5
-      connection-timeout: 30000
-      idle-timeout: 600000
-      max-lifetime: 1800000
-  
-  kafka:
-    bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
-    consumer:
-      auto-offset-reset: earliest
-      group-id: position-loader
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      properties:
-        max.poll.records: 100
-        max.poll.interval.ms: 300000
+      idle-timeout: 300000
+      connection-timeout: 20000
+      max-lifetime: 1200000
+      leak-detection-threshold: 60000
 
-  cache:
-    type: caffeine
+  jpa:
+    database-platform: org.hibernate.dialect.DB2Dialect
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: false
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
 
-  # Liquibase migration
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Liquibase Database Migrations
+  # ─────────────────────────────────────────────────────────────────────────────
   liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.xml
     enabled: true
-    change-log: classpath:db/changelog/db.changelog-master.yaml
 
-# ═══════════════════════════════════════════════════════════════════════════
-# POSITION LOADER CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════
-loader:
-  batch-size: ${BATCH_SIZE:1000}
-  processing-threads: ${EOD_THREADS:4}
-  dlq-retention-days: 7
-  dlq-max-retries: ${DLQ_MAX_RETRIES:3}
-  dlq-retry-interval-ms: ${DLQ_INTERVAL:300000}
-  
-  rate-limit:
-    max-concurrent: ${MAX_CONCURRENT:20}
-    requests-per-second: 100
-  
-  alerting:
-    dlq-threshold: ${DLQ_ALERT_THRESHOLD:100}
-    email-enabled: false
-    email-recipients: null
-  
-  consumer-lag:
-    check-interval-ms: 30000
-    alert-threshold: ${LAG_ALERT_THRESHOLD:10000}
-  
-  mspm:
-    base-url: ${MSPM_URL:http://localhost:8081}
-    timeout: 30s
-  
-  retry:
-    max-attempts: 3
-    initial-delay: 1s
-    max-delay: 30s
-    multiplier: 2.0
-  
-  feature-flags:
-    eod-processing-enabled: ${EOD_ENABLED:true}
-    intraday-processing-enabled: ${INTRADAY_ENABLED:true}
-    validation-enabled: ${VALIDATION_ENABLED:true}
-    duplicate-detection-enabled: ${DUPLICATE_DETECTION:true}
-    reconciliation-enabled: ${RECONCILIATION_ENABLED:true}
-    archival-enabled: ${ARCHIVAL_ENABLED:true}
-    disabled-accounts: ${DISABLED_ACCOUNTS:}
-    pilot-accounts: ${PILOT_ACCOUNTS:}
-  
-  validation:
-    enabled: ${VALIDATION_ENABLED:true}
-    reject-zero-quantity: ${REJECT_ZERO_QTY:true}
-    max-price-threshold: ${MAX_PRICE:1000000}
-  
-  archival:
-    enabled: ${ARCHIVAL_ENABLED:true}
-    retention-days: ${RETENTION_DAYS:180}
-    cron-schedule: "${ARCHIVAL_CRON:0 0 2 * * SUN}"
-  
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Kafka Configuration
+  # ─────────────────────────────────────────────────────────────────────────────
   kafka:
-    batch-size: 100
-    poll-timeout-ms: 5000
-  
-  # Tracing configuration
-  tracing:
-    enabled: ${TRACING_ENABLED:false}
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: fxan-loader
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 100
+      properties:
+        max.poll.interval.ms: 300000
+        session.timeout.ms: 30000
+        heartbeat.interval.ms: 10000
+    producer:
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+    properties:
+      security.protocol: ${KAFKA_SECURITY_PROTOCOL:PLAINTEXT}
 
-# ═══════════════════════════════════════════════════════════════════════════
-# RESILIENCE4J CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Redis Cache Configuration
+  # ─────────────────────────────────────────────────────────────────────────────
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 10
+          max-idle: 5
+          min-idle: 2
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Loader Service Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+loader:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MSPM Client Configuration
+  # ─────────────────────────────────────────────────────────────────────────────
+  mspm:
+    base-url: ${MSPM_BASE_URL:https://mspm.ms.com/api}
+    connect-timeout-ms: 30000
+    read-timeout-ms: 60000
+    max-retries: 3
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Batch Processing Configuration
+  # ─────────────────────────────────────────────────────────────────────────────
+  batch:
+    size: 100
+    parallelism: 10
+    timeout-ms: 5000
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Kafka Topics Configuration
+  # ─────────────────────────────────────────────────────────────────────────────
+  kafka:
+    eod-positions: fxan.positions.eod
+    intraday-positions: fxan.positions.intraday
+    eod-trigger: fxan.eod.trigger
+    position-changes: fxan.positions.changes
+    position-updates: fxan.positions.realtime
+    dlq: fxan.positions.dlq
+    position-listener-concurrency: 3
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Feature Flags
+  # ─────────────────────────────────────────────────────────────────────────────
+  features:
+    pilot-mode: ${PILOT_MODE:false}
+    pilot-accounts: ${PILOT_ACCOUNTS:}
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Reconciliation Configuration
+  # ─────────────────────────────────────────────────────────────────────────────
+  reconciliation:
+    large-position-threshold: 1000000
+    quantity-tolerance-percent: 5
+    price-tolerance-percent: 10
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Resilience4j Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
 resilience4j:
   circuitbreaker:
-    instances:
-      mspm-service:
+    configs:
+      default:
         registerHealthIndicator: true
         slidingWindowSize: 10
         minimumNumberOfCalls: 5
         permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
         waitDurationInOpenState: 30s
         failureRateThreshold: 50
-        slowCallDurationThreshold: 5s
         slowCallRateThreshold: 80
-        automaticTransitionFromOpenToHalfOpenEnabled: true
-      database:
-        registerHealthIndicator: true
-        slidingWindowSize: 20
-        minimumNumberOfCalls: 10
-        permittedNumberOfCallsInHalfOpenState: 5
-        waitDurationInOpenState: 60s
-        failureRateThreshold: 70
-  
-  retry:
+        slowCallDurationThreshold: 5s
     instances:
       mspm-service:
-        maxAttempts: 3
-        waitDuration: 1s
-        retryExceptions:
-          - java.io.IOException
-          - java.net.SocketTimeoutException
-          - org.springframework.web.client.ResourceAccessException
+        baseConfig: default
+        waitDurationInOpenState: 45s
+        slowCallDurationThreshold: 15s
+      redis:
+        baseConfig: default
+        waitDurationInOpenState: 15s
+        slowCallDurationThreshold: 500ms
       database:
+        baseConfig: default
+        waitDurationInOpenState: 60s
+        slidingWindowSize: 20
+        failureRateThreshold: 70
+
+  retry:
+    configs:
+      default:
         maxAttempts: 3
         waitDuration: 500ms
-        retryExceptions:
-          - org.springframework.dao.TransientDataAccessException
+    instances:
+      mspm-service:
+        baseConfig: default
+        maxAttempts: 3
+        waitDuration: 2s
+      database:
+        baseConfig: default
+        maxAttempts: 5
+        waitDuration: 200ms
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ACTUATOR & METRICS
-# ═══════════════════════════════════════════════════════════════════════════
+  ratelimiter:
+    configs:
+      default:
+        limitForPeriod: 100
+        limitRefreshPeriod: 1s
+        timeoutDuration: 500ms
+    instances:
+      mspm-service:
+        baseConfig: default
+        limitForPeriod: 50
+        timeoutDuration: 2s
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Actuator & Monitoring
+# ═══════════════════════════════════════════════════════════════════════════════
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus,circuitbreakers,retries
+        include: health,info,metrics,prometheus,circuitbreakers
   endpoint:
     health:
       show-details: always
       probes:
         enabled: true
-      group:
-        liveness:
-          include: livenessState
-        readiness:
-          include: readinessState,db,kafka
   health:
     circuitbreakers:
+      enabled: true
+    redis:
+      enabled: true
+    db:
       enabled: true
   metrics:
     export:
@@ -160,36 +211,66 @@ management:
         enabled: true
     tags:
       application: ${spring.application.name}
-  
-  # Tracing configuration (Phase 3)
-  tracing:
-    enabled: ${TRACING_ENABLED:false}
-    sampling:
-      probability: ${TRACING_SAMPLE_RATE:0.1}
-  
-  # OTLP exporter
-  otlp:
-    tracing:
-      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+      environment: ${ENVIRONMENT:local}
 
-# ═══════════════════════════════════════════════════════════════════════════
-# LOGGING
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# Logging Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
 logging:
   level:
-    root: ${LOG_LEVEL:INFO}
-    com.vyshali.positionloader: DEBUG
+    root: INFO
+    com.vyshali: DEBUG
     org.springframework.kafka: WARN
-    org.apache.kafka: WARN
+    org.hibernate.SQL: WARN
     io.github.resilience4j: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-}] %-5level %logger{36} - %msg%n"
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SERVER
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# Server Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
 server:
-  port: 8080
+  port: ${SERVER_PORT:8081}
   shutdown: graceful
 
-# Graceful shutdown
 spring.lifecycle:
   timeout-per-shutdown-phase: 30s
+
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# Development Profile
+# ═══════════════════════════════════════════════════════════════════════════════
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    url: jdbc:h2:mem:fxandb;MODE=DB2
+    driver-class-name: org.h2.Driver
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: create-drop
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+logging:
+  level:
+    com.vyshali: DEBUG
+    org.hibernate.SQL: DEBUG
+
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# Production Profile
+# ═══════════════════════════════════════════════════════════════════════════════
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+logging:
+  level:
+    root: WARN
+    com.vyshali: INFO

@@ -1,231 +1,267 @@
 package com.vyshali.common.service;
 
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Service for managing alerts and notifications.
- * Provides consistent alerting across all services with metrics integration.
+ * Centralized alert service for publishing operational alerts.
+ * Supports alert throttling to prevent spam.
+ *
+ * Usage patterns:
+ * - alertService.critical("circuit-breaker-open", "Redis circuit breaker opened", "redis-primary")
+ * - alertService.warning("high-latency", "Database queries exceeding threshold")
+ * - alertService.eodFailed(accountId, "Processing timeout")
  */
+@Slf4j
 @Service
+@RequiredArgsConstructor
 public class AlertService {
 
-    private static final Logger log = LoggerFactory.getLogger(AlertService.class);
-
-    private final MeterRegistry meterRegistry;
-    private final Counter alertsRaised;
+    // Alert throttling - prevent same alert within this period (milliseconds)
+    private static final long THROTTLE_PERIOD_MS = 60_000; // 1 minute
     private final Map<String, Long> lastAlertTime = new ConcurrentHashMap<>();
 
-    // Throttle alerts to avoid spam (minimum seconds between same alerts)
-    private static final long ALERT_THROTTLE_SECONDS = 60;
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COMMON ALERT TYPES (use these constants for consistency)
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    public AlertService(MeterRegistry meterRegistry) {
-        this.meterRegistry = meterRegistry;
-        this.alertsRaised = Counter.builder("alerts.raised.total")
-                .description("Total alerts raised")
-                .register(meterRegistry);
-    }
+    public static final String ALERT_DLQ_THRESHOLD = "dlq-threshold-exceeded";
+    public static final String ALERT_RATE_LIMIT = "rate-limit-hit";
+    public static final String ALERT_HIGH_LAG = "high-consumer-lag";
+    public static final String ALERT_CIRCUIT_OPEN = "circuit-breaker-open";
+    public static final String ALERT_CIRCUIT_CLOSED = "circuit-breaker-closed";
+    public static final String ALERT_VALIDATION_FAILED = "validation-failed";
+    public static final String ALERT_RECONCILIATION_MISMATCH = "reconciliation-mismatch";
+    public static final String ALERT_SERVICE_UNAVAILABLE = "service-unavailable";
+    public static final String ALERT_FIX_CONNECTION_LOST = "fix-connection-lost";
+    public static final String ALERT_FIX_CONNECTION_RESTORED = "fix-connection-restored";
+    public static final String ALERT_ORPHANED_ORDERS = "orphaned-orders-detected";
+    public static final String ALERT_DATABASE_ISSUE = "database-connection-issue";
+    public static final String ALERT_MEMORY_PRESSURE = "memory-pressure";
+    public static final String ALERT_EOD_FAILED = "eod-processing-failed";
+    public static final String ALERT_EOD_DELAYED = "eod-processing-delayed";
+    public static final String ALERT_POSITION_MISMATCH = "position-mismatch";
+    public static final String ALERT_PRICE_STALE = "stale-price-detected";
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PRIMARY METHODS (3 parameters - alertType, message, context)
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Raise an info-level alert.
+     * Send an INFO level alert.
+     * @param alertType Type/category of alert (use constants above)
+     * @param message Human-readable description
+     * @param context Additional context (e.g., account ID, service name)
      */
     public void info(String alertType, String message, String context) {
-        log.info("ALERT [{}] {}: {}", alertType, context, message);
-        meterRegistry.counter("alerts.info", "type", alertType).increment();
-    }
-
-    /**
-     * Raise a warning-level alert.
-     */
-    public void warning(String alertType, String message, String context) {
-        if (shouldThrottle(alertType)) {
-            log.debug("Alert throttled: {} - {}", alertType, message);
+        if (shouldThrottle(alertType + "-info")) {
             return;
         }
-
-        log.warn("ALERT [{}] {}: {}", alertType, context, message);
-        meterRegistry.counter("alerts.warning", "type", alertType).increment();
-        alertsRaised.increment();
-        recordAlertTime(alertType);
+        log.info("[ALERT:INFO] type={}, message={}, context={}", alertType, message, context);
+        publishAlert("INFO", alertType, message, context);
     }
 
     /**
-     * Raise a critical-level alert.
+     * Send a WARNING level alert.
+     * @param alertType Type/category of alert (use constants above)
+     * @param message Human-readable description
+     * @param context Additional context (e.g., account ID, service name)
+     */
+    public void warning(String alertType, String message, String context) {
+        if (shouldThrottle(alertType + "-warning")) {
+            return;
+        }
+        log.warn("[ALERT:WARNING] type={}, message={}, context={}", alertType, message, context);
+        publishAlert("WARNING", alertType, message, context);
+    }
+
+    /**
+     * Send a CRITICAL level alert.
+     * @param alertType Type/category of alert (use constants above)
+     * @param message Human-readable description
+     * @param context Additional context (e.g., account ID, service name)
      */
     public void critical(String alertType, String message, String context) {
         // Critical alerts are never throttled
-        log.error("CRITICAL ALERT [{}] {}: {}", alertType, context, message);
-        meterRegistry.counter("alerts.critical", "type", alertType).increment();
-        alertsRaised.increment();
+        log.error("[ALERT:CRITICAL] type={}, message={}, context={}", alertType, message, context);
+        publishAlert("CRITICAL", alertType, message, context);
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // COMMON ALERT TYPES
-    // ════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CONVENIENCE OVERLOADS (2 parameters - for simpler usage)
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Alert when DLQ threshold is exceeded.
+     * Send an INFO alert without context.
      */
-    public void dlqThresholdExceeded(int currentDepth, int threshold) {
-        warning("DLQ_THRESHOLD_EXCEEDED",
-                String.format("DLQ depth (%d) exceeds threshold (%d)", currentDepth, threshold),
-                "DLQ");
+    public void info(String alertType, String message) {
+        info(alertType, message, null);
     }
 
     /**
-     * Alert when rate limit is hit.
+     * Send a WARNING alert without context.
      */
-    public void rateLimitHit(String source, int rejectedCount) {
-        warning("RATE_LIMIT_HIT",
-                String.format("Rate limit hit for %s, %d rejections", source, rejectedCount),
-                source);
+    public void warning(String alertType, String message) {
+        warning(alertType, message, null);
     }
 
     /**
-     * Alert when consumer lag is high.
+     * Alias for warning() - some callers use warn().
      */
-    public void highConsumerLag(String topic, String group, long lag) {
-        warning("HIGH_CONSUMER_LAG",
-                String.format("Consumer lag for %s/%s: %d messages", topic, group, lag),
-                group);
+    public void warn(String alertType, String message) {
+        warning(alertType, message, null);
     }
 
     /**
-     * Alert when circuit breaker opens.
+     * Alias for warning() with context.
      */
-    public void circuitBreakerOpen(String name) {
-        critical("CIRCUIT_BREAKER_OPEN",
-                String.format("Circuit breaker '%s' is now OPEN", name),
-                name);
+    public void warn(String alertType, String message, String context) {
+        warning(alertType, message, context);
     }
 
     /**
-     * Alert when circuit breaker closes.
+     * Send a CRITICAL alert without context.
      */
-    public void circuitBreakerClosed(String name) {
-        info("CIRCUIT_BREAKER_CLOSED",
-                String.format("Circuit breaker '%s' is now CLOSED", name),
-                name);
+    public void critical(String alertType, String message) {
+        critical(alertType, message, null);
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DOMAIN-SPECIFIC ALERT METHODS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Alert for EOD processing issues.
+     * Alert for EOD processing failure by account.
+     * @param accountId The account that failed
+     * @param error Error description
      */
     public void eodFailed(int accountId, String error) {
-        critical("EOD_FAILED",
-                String.format("EOD failed for account %d: %s", accountId, error),
-                String.valueOf(accountId));
+        critical(ALERT_EOD_FAILED,
+                String.format("EOD processing failed for account %d: %s", accountId, error),
+                "accountId=" + accountId);
     }
 
     /**
-     * Alert for EOD delay.
+     * Alert for EOD processing failure by date.
+     * @param businessDate The business date that failed
+     * @param error Error description
      */
-    public void eodDelayed(int accountId, long delayMinutes) {
-        warning("EOD_DELAYED",
-                String.format("EOD for account %d delayed by %d minutes", accountId, delayMinutes),
-                String.valueOf(accountId));
+    public void eodFailed(LocalDate businessDate, String error) {
+        critical(ALERT_EOD_FAILED,
+                String.format("EOD processing failed for date %s: %s", businessDate, error),
+                "businessDate=" + businessDate);
     }
 
     /**
-     * Alert for validation issues.
+     * Alert for DLQ threshold exceeded.
+     * @param topic Kafka topic name
+     * @param count Number of messages in DLQ
+     * @param threshold Configured threshold
      */
-    public void validationFailed(String entityType, String entityId, String details) {
-        warning("VALIDATION_FAILED",
-                String.format("%s %s validation failed: %s", entityType, entityId, details),
-                entityId);
+    public void dlqThresholdExceeded(String topic, long count, long threshold) {
+        critical(ALERT_DLQ_THRESHOLD,
+                String.format("DLQ message count %d exceeds threshold %d", count, threshold),
+                "topic=" + topic);
     }
 
     /**
-     * Alert for reconciliation mismatch.
+     * Alert for circuit breaker state change.
+     * @param serviceName Name of the service
+     * @param isOpen True if circuit opened, false if closed
      */
-    public void reconciliationMismatch(int accountId, int mismatchCount) {
-        warning("RECONCILIATION_MISMATCH",
-                String.format("Reconciliation found %d mismatches for account %d", 
-                        mismatchCount, accountId),
-                String.valueOf(accountId));
-    }
-
-    /**
-     * Alert for external service unavailability.
-     */
-    public void serviceUnavailable(String serviceName) {
-        critical("SERVICE_UNAVAILABLE",
-                String.format("Service '%s' is unavailable", serviceName),
-                serviceName);
-    }
-
-    /**
-     * Alert for FIX connection issues.
-     */
-    public void fixConnectionLost(String sessionId) {
-        critical("FIX_CONNECTION_LOST",
-                String.format("FIX session '%s' disconnected", sessionId),
-                sessionId);
-    }
-
-    /**
-     * Alert for FIX connection restored.
-     */
-    public void fixConnectionRestored(String sessionId) {
-        info("FIX_CONNECTION_RESTORED",
-                String.format("FIX session '%s' reconnected", sessionId),
-                sessionId);
-    }
-
-    /**
-     * Alert for orphaned orders.
-     */
-    public void orphanedOrdersDetected(int count) {
-        warning("ORPHANED_ORDERS",
-                String.format("%d orphaned orders detected", count),
-                "ORDERS");
-    }
-
-    /**
-     * Alert for database connection issues.
-     */
-    public void databaseConnectionIssue(String details) {
-        critical("DATABASE_CONNECTION_ISSUE",
-                details,
-                "DATABASE");
-    }
-
-    /**
-     * Alert for memory pressure.
-     */
-    public void memoryPressure(long usedMb, long maxMb, double percentage) {
-        warning("MEMORY_PRESSURE",
-                String.format("Memory usage: %dMB / %dMB (%.1f%%)", usedMb, maxMb, percentage),
-                "JVM");
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    // THROTTLING
-    // ════════════════════════════════════════════════════════════════════════
-
-    private boolean shouldThrottle(String alertType) {
-        Long lastTime = lastAlertTime.get(alertType);
-        if (lastTime == null) {
-            return false;
+    public void circuitBreakerStateChange(String serviceName, boolean isOpen) {
+        if (isOpen) {
+            critical(ALERT_CIRCUIT_OPEN,
+                    String.format("Circuit breaker opened for service: %s", serviceName),
+                    "service=" + serviceName);
+        } else {
+            info(ALERT_CIRCUIT_CLOSED,
+                    String.format("Circuit breaker closed for service: %s", serviceName),
+                    "service=" + serviceName);
         }
-        long elapsed = (System.currentTimeMillis() - lastTime) / 1000;
-        return elapsed < ALERT_THROTTLE_SECONDS;
-    }
-
-    private void recordAlertTime(String alertType) {
-        lastAlertTime.put(alertType, System.currentTimeMillis());
     }
 
     /**
-     * Clear alert throttle state (for testing).
+     * Alert for high consumer lag.
+     * @param consumerGroup Kafka consumer group
+     * @param lag Current lag value
+     * @param threshold Configured threshold
      */
-    public void clearThrottleState() {
+    public void highConsumerLag(String consumerGroup, long lag, long threshold) {
+        warning(ALERT_HIGH_LAG,
+                String.format("Consumer lag %d exceeds threshold %d", lag, threshold),
+                "consumerGroup=" + consumerGroup);
+    }
+
+    /**
+     * Alert for position reconciliation mismatch.
+     * @param accountId Account with mismatch
+     * @param details Mismatch details
+     */
+    public void reconciliationMismatch(int accountId, String details) {
+        warning(ALERT_RECONCILIATION_MISMATCH,
+                String.format("Position mismatch for account %d: %s", accountId, details),
+                "accountId=" + accountId);
+    }
+
+    /**
+     * Alert for stale prices.
+     * @param securityId Security with stale price
+     * @param lastUpdateMinutes Minutes since last update
+     */
+    public void stalePriceDetected(String securityId, long lastUpdateMinutes) {
+        warning(ALERT_PRICE_STALE,
+                String.format("Price for %s is %d minutes old", securityId, lastUpdateMinutes),
+                "securityId=" + securityId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL METHODS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Check if alert should be throttled.
+     * @param alertKey Unique key for the alert
+     * @return true if alert should be suppressed
+     */
+    private boolean shouldThrottle(String alertKey) {
+        long now = System.currentTimeMillis();
+        Long lastTime = lastAlertTime.get(alertKey);
+
+        if (lastTime != null && (now - lastTime) < THROTTLE_PERIOD_MS) {
+            log.debug("Throttling alert: {}", alertKey);
+            return true;
+        }
+
+        lastAlertTime.put(alertKey, now);
+        return false;
+    }
+
+    /**
+     * Publish alert to external systems (Kafka, PagerDuty, etc.)
+     * Override this in production to integrate with actual alerting systems.
+     */
+    protected void publishAlert(String severity, String alertType, String message, String context) {
+        // In production, this would:
+        // 1. Publish to Kafka alert topic
+        // 2. Send to PagerDuty for critical alerts
+        // 3. Update metrics/dashboards
+        // 4. Send to Slack/Teams channels
+
+        // For now, just log (actual implementation would be injected)
+        log.debug("Publishing alert: severity={}, type={}, message={}, context={}",
+                severity, alertType, message, context);
+    }
+
+    /**
+     * Clear throttle cache (useful for testing).
+     */
+    public void clearThrottleCache() {
         lastAlertTime.clear();
     }
 }

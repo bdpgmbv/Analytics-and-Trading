@@ -1,227 +1,213 @@
 package com.vyshali.positionloader.config;
 
-import org.springframework.stereotype.Component;
+import lombok.RequiredArgsConstructor;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+
+import java.math.BigDecimal;
 import java.util.List;
-import java.util.Collections;
 
 /**
- * Loader configuration that provides typed access to loader properties.
- * This bridges the gap between LoaderProperties (external config) and 
- * application code that needs typed configuration access.
+ * Main configuration class for the Position Loader service.
+ * Provides type-safe access to configuration properties and helper methods.
  */
-@Component
+@Configuration
+@EnableConfigurationProperties(LoaderProperties.class)
+@RequiredArgsConstructor
 public class LoaderConfig {
-    
+
     private final LoaderProperties properties;
-    private final Features features;
-    private final Dlq dlq;
-    private final Processing processing;
-    private final Validation validation;
-    
-    public LoaderConfig(LoaderProperties properties) {
-        this.properties = properties;
-        this.features = new Features(properties.featureFlags());
-        this.dlq = new Dlq(properties.dlqRetentionDays(), properties.dlqMaxRetries());
-        this.processing = new Processing(properties.processingThreads(), properties.batchSize());
-        this.validation = new Validation(properties.validation());
-    }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MSPM CLIENT CONFIGURATION ACCESS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Number of parallel processing threads.
+     * Get MSPM configuration.
      */
-    public int parallelThreads() {
-        return properties.processingThreads();
+    public Mspm mspm() {
+        return new Mspm(properties.mspm());
     }
-    
+
+    public static class Mspm {
+        private final LoaderProperties.MspmConfig config;
+
+        Mspm(LoaderProperties.MspmConfig config) {
+            this.config = config;
+        }
+
+        public String baseUrl() {
+            return config.baseUrl();
+        }
+
+        public int connectTimeoutMs() {
+            return config.connectTimeoutMs();
+        }
+
+        public int readTimeoutMs() {
+            return config.readTimeoutMs();
+        }
+
+        public int maxRetries() {
+            return config.maxRetries();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BATCH PROCESSING CONFIGURATION ACCESS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Maximum retries for DLQ messages.
+     * Get batch processing configuration.
      */
-    public int dlqMaxRetries() {
-        return properties.dlqMaxRetries();
+    public Batch batch() {
+        return new Batch(properties.batch());
     }
-    
+
+    public static class Batch {
+        private final LoaderProperties.BatchConfig config;
+
+        Batch(LoaderProperties.BatchConfig config) {
+            this.config = config;
+        }
+
+        public int size() {
+            return config.size();
+        }
+
+        public int parallelism() {
+            return config.parallelism();
+        }
+
+        public int timeoutMs() {
+            return config.timeoutMs();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // KAFKA TOPIC CONFIGURATION ACCESS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Batch size for processing.
+     * Get Kafka topic configuration.
      */
-    public int batchSize() {
-        return properties.batchSize();
+    public Kafka kafka() {
+        return new Kafka(properties.kafka());
     }
-    
+
+    public static class Kafka {
+        private final LoaderProperties.KafkaTopics config;
+
+        Kafka(LoaderProperties.KafkaTopics config) {
+            this.config = config;
+        }
+
+        public String eodPositions() {
+            return config.eodPositions();
+        }
+
+        public String intradayPositions() {
+            return config.intradayPositions();
+        }
+
+        public String eodTrigger() {
+            return config.eodTrigger();
+        }
+
+        public String positionChanges() {
+            return config.positionChanges();
+        }
+
+        public String dlq() {
+            return config.dlq();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FEATURE FLAGS CONFIGURATION ACCESS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Feature flags access.
+     * Get feature flags configuration.
      */
     public Features features() {
-        return features;
+        return new Features(properties.features());
     }
-    
-    /**
-     * DLQ configuration access.
-     */
-    public Dlq dlq() {
-        return dlq;
-    }
-    
-    /**
-     * Processing configuration access.
-     */
-    public Processing processing() {
-        return processing;
-    }
-    
-    /**
-     * Validation configuration access.
-     */
-    public Validation validation() {
-        return validation;
-    }
-    
-    /**
-     * Get the underlying properties.
-     */
-    public LoaderProperties properties() {
-        return properties;
-    }
-    
-    /**
-     * Feature flags configuration.
-     */
+
     public static class Features {
-        private final LoaderProperties.FeatureFlagsConfig flags;
-        
-        Features(LoaderProperties.FeatureFlagsConfig flags) {
-            this.flags = flags != null ? flags : new LoaderProperties.FeatureFlagsConfig(
-                true, true, true, true, true, true, Collections.emptyList(), Collections.emptyList());
+        private final LoaderProperties.Features config;
+
+        Features(LoaderProperties.Features config) {
+            this.config = config;
         }
-        
-        public boolean eodProcessingEnabled() {
-            return flags.eodProcessingEnabled();
+
+        public boolean pilotMode() {
+            return config.pilotMode();
         }
-        
-        public boolean intradayProcessingEnabled() {
-            return flags.intradayProcessingEnabled();
-        }
-        
-        public boolean validationEnabled() {
-            return flags.validationEnabled();
-        }
-        
-        public boolean duplicateDetectionEnabled() {
-            return flags.duplicateDetectionEnabled();
-        }
-        
-        public boolean reconciliationEnabled() {
-            return flags.reconciliationEnabled();
-        }
-        
-        public boolean archivalEnabled() {
-            return flags.archivalEnabled();
-        }
-        
-        public List<Integer> disabledAccounts() {
-            return flags.disabledAccounts() != null ? flags.disabledAccounts() : Collections.emptyList();
-        }
-        
+
         public List<Integer> pilotAccounts() {
-            return flags.pilotAccounts() != null ? flags.pilotAccounts() : Collections.emptyList();
+            return config.pilotAccounts();
         }
-        
+
         /**
-         * Check if an account is disabled.
-         */
-        public boolean isAccountDisabled(int accountId) {
-            return disabledAccounts().contains(accountId);
-        }
-        
-        /**
-         * Check if account should be processed (pilot mode check).
+         * Check if an account should be processed based on pilot mode settings.
          */
         public boolean shouldProcessAccount(int accountId) {
-            // If disabled, never process
-            if (isAccountDisabled(accountId)) {
-                return false;
-            }
-            // If pilot accounts are defined, only process those
-            List<Integer> pilots = pilotAccounts();
-            if (pilots != null && !pilots.isEmpty()) {
-                return pilots.contains(accountId);
-            }
-            // Otherwise process all non-disabled accounts
-            return true;
+            return config.shouldProcessAccount(accountId);
         }
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RECONCILIATION CONFIGURATION ACCESS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * DLQ configuration.
+     * Get reconciliation configuration.
      */
-    public static class Dlq {
-        private final int retentionDays;
-        private final int maxRetries;
-        
-        Dlq(int retentionDays, int maxRetries) {
-            this.retentionDays = retentionDays > 0 ? retentionDays : 7;
-            this.maxRetries = maxRetries > 0 ? maxRetries : 3;
+    public Reconciliation reconciliation() {
+        return new Reconciliation(properties.reconciliation());
+    }
+
+    public static class Reconciliation {
+        private final LoaderProperties.ReconciliationConfig config;
+
+        Reconciliation(LoaderProperties.ReconciliationConfig config) {
+            this.config = config;
         }
-        
-        public int retentionDays() {
-            return retentionDays;
+
+        /**
+         * Threshold for flagging large positions (in base currency).
+         * Positions above this value get extra scrutiny.
+         */
+        public BigDecimal largePositionThreshold() {
+            return config.largePositionThreshold();
         }
-        
-        public int maxRetries() {
-            return maxRetries;
+
+        /**
+         * Tolerance percentage for quantity mismatches.
+         * E.g., 5 means 5% tolerance.
+         */
+        public BigDecimal quantityTolerancePercent() {
+            return config.quantityTolerancePercent();
+        }
+
+        /**
+         * Tolerance percentage for price mismatches.
+         * E.g., 10 means 10% tolerance.
+         */
+        public BigDecimal priceTolerancePercent() {
+            return config.priceTolerancePercent();
         }
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DIRECT PROPERTY ACCESS (for simple cases)
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Processing configuration.
+     * Get raw properties (for cases where typed access isn't needed).
      */
-    public static class Processing {
-        private final int threads;
-        private final int batchSize;
-        
-        Processing(int threads, int batchSize) {
-            this.threads = threads > 0 ? threads : 4;
-            this.batchSize = batchSize > 0 ? batchSize : 1000;
-        }
-        
-        public int threads() {
-            return threads;
-        }
-        
-        public int batchSize() {
-            return batchSize;
-        }
-    }
-    
-    /**
-     * Validation configuration.
-     */
-    public static class Validation {
-        private final boolean enabled;
-        private final boolean rejectZeroQuantity;
-        private final int maxPriceThreshold;
-        
-        Validation(LoaderProperties.ValidationConfig config) {
-            if (config != null) {
-                this.enabled = config.enabled();
-                this.rejectZeroQuantity = config.rejectZeroQuantity();
-                this.maxPriceThreshold = config.maxPriceThreshold();
-            } else {
-                this.enabled = true;
-                this.rejectZeroQuantity = true;
-                this.maxPriceThreshold = 1000000;
-            }
-        }
-        
-        public boolean enabled() {
-            return enabled;
-        }
-        
-        public boolean rejectZeroQuantity() {
-            return rejectZeroQuantity;
-        }
-        
-        public int maxPriceThreshold() {
-            return maxPriceThreshold;
-        }
+    public LoaderProperties getProperties() {
+        return properties;
     }
 }

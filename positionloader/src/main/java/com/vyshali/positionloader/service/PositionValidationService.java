@@ -1,7 +1,7 @@
 package com.vyshali.positionloader.service;
 
 import com.vyshali.positionloader.config.LoaderConfig;
-import com.vyshali.positionloader.dto.PositionDto;
+import com.vyshali.common.dto.PositionDto;
 import com.vyshali.positionloader.repository.ReferenceDataRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

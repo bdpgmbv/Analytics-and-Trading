@@ -1,103 +1,118 @@
 package com.vyshali.positionloader.listener;
 
-import com.vyshali.common.lifecycle.GracefulShutdownManager;
-import com.vyshali.common.logging.LogContext;
-import com.vyshali.common.repository.DlqRepository;
-import com.vyshali.common.util.JsonUtils;
-import com.vyshali.positionloader.dto.PositionDto;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vyshali.common.dto.PositionDto;
+import com.vyshali.common.dto.PositionDto.PositionUpdate;
+import com.vyshali.common.service.AlertService;
+import com.vyshali.positionloader.config.LoaderConfig;
 import com.vyshali.positionloader.service.PositionService;
 import io.micrometer.core.instrument.MeterRegistry;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 
 /**
- * Kafka listener for position updates.
- * 
- * ✅ MODIFIED: Now uses common module services:
- *    - GracefulShutdownManager for shutdown coordination
- *    - DlqRepository for dead letter queue (DELETE your local DlqRepository.java)
- *    - LogContext for structured logging
- *    - JsonUtils for safe parsing
+ * Dedicated listener for real-time position update stream.
+ * Separate from KafkaListeners to allow independent scaling.
  */
+@Slf4j
 @Component
+@RequiredArgsConstructor
 public class PositionListener {
 
-    private static final Logger log = LoggerFactory.getLogger(PositionListener.class);
-    private static final String TOPIC = "positions.updates";
-
     private final PositionService positionService;
-    
-    // ✅ INJECT FROM COMMON MODULE
-    private final GracefulShutdownManager shutdown;
-    private final DlqRepository dlqRepository;
-    
-    private final MeterRegistry metrics;
+    private final ObjectMapper objectMapper;
+    private final LoaderConfig config;
+    private final AlertService alertService;
+    private final MeterRegistry meterRegistry;
 
-    public PositionListener(PositionService positionService,
-                           GracefulShutdownManager shutdown,
-                           DlqRepository dlqRepository,
-                           MeterRegistry metrics) {
-        this.positionService = positionService;
-        this.shutdown = shutdown;
-        this.dlqRepository = dlqRepository;
-        this.metrics = metrics;
-    }
-
+    /**
+     * Listen for real-time position updates.
+     * This is a high-throughput listener for intraday position changes.
+     */
     @KafkaListener(
-            topics = TOPIC,
-            groupId = "${spring.kafka.consumer.group-id:position-loader}",
-            concurrency = "${app.kafka.positions.concurrency:3}"
+            topics = "${loader.kafka.position-updates:fxan.positions.realtime}",
+            groupId = "${spring.kafka.consumer.group-id:fxan-loader}-positions",
+            containerFactory = "kafkaListenerContainerFactory",
+            concurrency = "${loader.kafka.position-listener-concurrency:3}"
     )
     public void onPositionUpdate(ConsumerRecord<String, String> record, Acknowledgment ack) {
-        // ✅ CHECK SHUTDOWN STATE FIRST
-        if (shutdown.isShuttingDown()) {
-            log.info("Shutdown in progress, not processing new messages");
-            return; // Don't ack - let another instance pick it up
-        }
+        String key = record.key();
 
-        // ✅ TRACK JOB FOR GRACEFUL SHUTDOWN
-        shutdown.jobStarted();
+        log.debug("Received position update: key={}, partition={}, offset={}",
+                key, record.partition(), record.offset());
+
+        meterRegistry.counter("position.updates.received").increment();
+
         try {
-            processMessage(record);
+            // Parse the update
+            PositionUpdate update = objectMapper.readValue(record.value(), PositionUpdate.class);
+
+            // Validate
+            if (!isValidUpdate(update)) {
+                log.warn("Invalid position update received: key={}", key);
+                alertService.warn(AlertService.ALERT_VALIDATION_FAILED,
+                        "Invalid position update - missing required fields",
+                        "key=" + key);
+                ack.acknowledge();
+                return;
+            }
+
+            // Check pilot mode
+            if (!config.features().shouldProcessAccount(update.accountId())) {
+                log.debug("Skipping position update for account {} - not in pilot", update.accountId());
+                ack.acknowledge();
+                return;
+            }
+
+            // Process the update using the correct method
+            positionService.updatePosition(update);
+
+            meterRegistry.counter("position.updates.processed", "status", "success").increment();
             ack.acknowledge();
-            metrics.counter("position.update.processed", "status", "success").increment();
+
+        } catch (JsonProcessingException e) {
+            log.error("Failed to parse position update: key={}, error={}", key, e.getMessage());
+            alertService.warn(AlertService.ALERT_VALIDATION_FAILED,
+                    "Position update parse error: " + e.getMessage(),
+                    "key=" + key);
+            meterRegistry.counter("position.updates.processed", "status", "parse-error").increment();
+            ack.acknowledge(); // Don't retry parse errors
+
         } catch (Exception e) {
-            handleError(record, e);
-            ack.acknowledge(); // Still ack to avoid blocking
-        } finally {
-            // ✅ MARK JOB AS ENDED
-            shutdown.jobEnded();
+            log.error("Failed to process position update: key={}, error={}", key, e.getMessage(), e);
+            alertService.warn(AlertService.ALERT_POSITION_MISMATCH,
+                    "Position update processing failed: " + e.getMessage(),
+                    "key=" + key);
+            meterRegistry.counter("position.updates.processed", "status", "error").increment();
+            // Re-throw to trigger retry
+            throw new RuntimeException("Position update processing failed", e);
         }
     }
 
-    private void processMessage(ConsumerRecord<String, String> record) {
-        // ✅ Use JsonUtils from common for safe parsing
-        PositionDto.PositionUpdate update = JsonUtils.fromJson(record.value(), PositionDto.PositionUpdate.class);
-
-        if (update == null || update.accountId() <= 0) {
-            log.warn("Invalid position update received: {}", record.value());
-            metrics.counter("position.update.invalid").increment();
-            return;
+    /**
+     * Validate that update has required fields.
+     */
+    private boolean isValidUpdate(PositionUpdate update) {
+        if (update == null) {
+            return false;
         }
-
-        // ✅ Use LogContext for structured logging
-        LogContext.forAccount(update.accountId())
-                .and("productId", update.productId())
-                .run(() -> {
-                    log.debug("Processing position update: {}", update);
-                    positionService.updatePosition(update);
-                });
-    }
-
-    private void handleError(ConsumerRecord<String, String> record, Exception e) {
-        log.error("Error processing position update: {}", e.getMessage(), e);
-        metrics.counter("position.update.processed", "status", "error").increment();
-
-        // ✅ Use DlqRepository from common (DELETE your local DlqRepository.java)
-        dlqRepository.insert(TOPIC, record.key(), record.value(), e.getMessage());
+        if (update.accountId() <= 0) {
+            log.debug("Invalid accountId: {}", update.accountId());
+            return false;
+        }
+        if (update.securityId() == null || update.securityId().isBlank()) {
+            log.debug("Missing securityId");
+            return false;
+        }
+        if (update.businessDate() == null) {
+            log.debug("Missing businessDate");
+            return false;
+        }
+        return true;
     }
 }

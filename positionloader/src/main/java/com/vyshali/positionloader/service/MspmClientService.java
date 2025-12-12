@@ -1,270 +1,354 @@
 package com.vyshali.positionloader.service;
 
-import com.vyshali.positionloader.config.LoaderProperties;
-import com.vyshali.positionloader.config.ResilienceConfig;
-import com.vyshali.positionloader.dto.PositionDto;
-import com.vyshali.positionloader.exception.MspmClientException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vyshali.common.config.ResilienceConfig;
+import com.vyshali.common.dto.PositionDto;
+import com.vyshali.common.service.AlertService;
+import com.vyshali.positionloader.config.LoaderConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.ratelimiter.RateLimiter;
+import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
 import io.github.resilience4j.retry.Retry;
 import io.github.resilience4j.retry.RetryRegistry;
-import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestTemplate;
 
-import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.List;
 import java.util.function.Supplier;
 
 /**
- * Client service for MSPM API integration.
- * 
- * Features:
- * - Circuit breaker to prevent cascade failures
- * - Retry with exponential backoff
- * - Comprehensive metrics
+ * Client service for interacting with MSPM (Morgan Stanley Portfolio Management).
+ * Implements resilience patterns: circuit breaker, retry, rate limiting.
  */
+@Slf4j
 @Service
 public class MspmClientService {
-    
-    private static final Logger log = LoggerFactory.getLogger(MspmClientService.class);
-    
-    private final RestClient restClient;
-    private final LoaderProperties properties;
+
+    private final RestTemplate restTemplate;
+    private final ObjectMapper objectMapper;
+    private final LoaderConfig config;
+    private final AlertService alertService;
+    private final MeterRegistry meterRegistry;
+
+    // Resilience components
     private final CircuitBreaker circuitBreaker;
     private final Retry retry;
-    private final Timer apiTimer;
-    private final Counter apiCalls;
-    private final Counter apiErrors;
-    private final Counter circuitBreakerOpen;
-    
+    private final RateLimiter rateLimiter;
+
+    private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ISO_LOCAL_DATE;
+
     public MspmClientService(
-            RestClient.Builder restClientBuilder,
-            LoaderProperties properties,
+            RestTemplate restTemplate,
+            ObjectMapper objectMapper,
+            LoaderConfig config,
+            AlertService alertService,
+            MeterRegistry meterRegistry,
             CircuitBreakerRegistry circuitBreakerRegistry,
             RetryRegistry retryRegistry,
-            MeterRegistry meterRegistry) {
-        this.properties = properties;
-        this.restClient = restClientBuilder
-            .baseUrl(properties.mspm().baseUrl())
-            .build();
-        
-        // Get or create circuit breaker and retry
+            RateLimiterRegistry rateLimiterRegistry
+    ) {
+        this.restTemplate = restTemplate;
+        this.objectMapper = objectMapper;
+        this.config = config;
+        this.alertService = alertService;
+        this.meterRegistry = meterRegistry;
+
+        // Get resilience components using the MSPM_SERVICE constant from common
         this.circuitBreaker = circuitBreakerRegistry.circuitBreaker(ResilienceConfig.MSPM_SERVICE);
         this.retry = retryRegistry.retry(ResilienceConfig.MSPM_SERVICE);
-        
-        // Setup metrics
-        this.apiTimer = Timer.builder("mspm.api.time")
-            .description("MSPM API call time")
-            .register(meterRegistry);
-        this.apiCalls = Counter.builder("mspm.api.calls")
-            .description("MSPM API calls")
-            .register(meterRegistry);
-        this.apiErrors = Counter.builder("mspm.api.errors")
-            .description("MSPM API errors")
-            .register(meterRegistry);
-        this.circuitBreakerOpen = Counter.builder("mspm.circuitbreaker.rejected")
-            .description("Requests rejected by circuit breaker")
-            .register(meterRegistry);
-        
-        // Register circuit breaker event listeners
-        circuitBreaker.getEventPublisher()
-            .onStateTransition(event -> log.warn("MSPM Circuit Breaker state: {} -> {}", 
-                event.getStateTransition().getFromState(), 
-                event.getStateTransition().getToState()))
-            .onCallNotPermitted(event -> {
-                circuitBreakerOpen.increment();
-                log.warn("MSPM call rejected - circuit breaker OPEN");
-            });
+        this.rateLimiter = rateLimiterRegistry.rateLimiter(ResilienceConfig.MSPM_SERVICE);
+
+        // Register circuit breaker event handlers
+        registerCircuitBreakerEvents();
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PUBLIC API
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Fetch positions from MSPM for account and date.
-     * Protected by circuit breaker and retry.
+     * Get EOD positions for an account from MSPM.
+     * @param accountId Account ID
+     * @param businessDate Business date
+     * @return List of positions
      */
-    public List<PositionDto> fetchPositions(int accountId, LocalDate businessDate) {
-        log.info("Fetching positions from MSPM for account {} date {}", accountId, businessDate);
-        apiCalls.increment();
-        
-        // Wrap the call with retry and circuit breaker
-        Supplier<List<PositionDto>> decoratedSupplier = CircuitBreaker.decorateSupplier(
-            circuitBreaker,
-            Retry.decorateSupplier(retry, () -> doFetchPositions(accountId, businessDate))
+    public List<PositionDto> getEodPositions(int accountId, LocalDate businessDate) {
+        String url = buildUrl("/accounts/{accountId}/positions/eod", accountId, businessDate);
+
+        return executeWithResilience(
+                () -> fetchPositions(url, accountId, businessDate),
+                "getEodPositions",
+                accountId
         );
-        
+    }
+
+    /**
+     * Get current (intraday) positions for an account.
+     * @param accountId Account ID
+     * @param businessDate Business date
+     * @return List of positions
+     */
+    public List<PositionDto> getIntradayPositions(int accountId, LocalDate businessDate) {
+        String url = buildUrl("/accounts/{accountId}/positions/intraday", accountId, businessDate);
+
+        return executeWithResilience(
+                () -> fetchPositions(url, accountId, businessDate),
+                "getIntradayPositions",
+                accountId
+        );
+    }
+
+    /**
+     * Get positions for reconciliation (used by ReconciliationService).
+     * @param accountId Account ID
+     * @param businessDate Business date
+     * @return List of MSPM positions for reconciliation
+     */
+    public List<ReconciliationService.MspmPosition> getPositionsForAccount(int accountId, LocalDate businessDate) {
+        String url = buildUrl("/accounts/{accountId}/positions", accountId, businessDate);
+
+        return executeWithResilience(
+                () -> fetchMspmPositions(url, accountId, businessDate),
+                "getPositionsForAccount",
+                accountId
+        );
+    }
+
+    /**
+     * Get reference data for an account.
+     * @param accountId Account ID
+     * @return Account reference data
+     */
+    public AccountReferenceData getAccountReferenceData(int accountId) {
+        String url = config.mspm().baseUrl() + "/accounts/" + accountId + "/reference";
+
+        return executeWithResilience(
+                () -> fetchAccountReference(url, accountId),
+                "getAccountReferenceData",
+                accountId
+        );
+    }
+
+    /**
+     * Health check for MSPM service.
+     * @return true if MSPM is reachable
+     */
+    public boolean healthCheck() {
         try {
-            return decoratedSupplier.get();
+            String url = config.mspm().baseUrl() + "/health";
+            ResponseEntity<String> response = restTemplate.getForEntity(url, String.class);
+            return response.getStatusCode().is2xxSuccessful();
         } catch (Exception e) {
-            apiErrors.increment();
-            if (e.getCause() instanceof MspmClientException) {
-                throw (MspmClientException) e.getCause();
-            }
-            throw new MspmClientException("MSPM call failed after retries: " + e.getMessage(), e);
+            log.warn("MSPM health check failed: {}", e.getMessage());
+            return false;
         }
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL FETCH METHODS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Internal method to actually fetch positions.
+     * Fetch positions from MSPM.
      */
-    private List<PositionDto> doFetchPositions(int accountId, LocalDate businessDate) {
-        return apiTimer.record(() -> {
-            try {
-                MspmResponse response = restClient.get()
-                    .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/accounts/{accountId}/positions")
-                        .queryParam("businessDate", businessDate.toString())
-                        .build(accountId))
-                    .retrieve()
-                    .body(MspmResponse.class);
-                
-                if (response == null || response.positions == null) {
-                    log.warn("Empty response from MSPM for account {} date {}", 
-                        accountId, businessDate);
-                    return List.of();
-                }
-                
-                List<PositionDto> positions = response.positions.stream()
-                    .map(mp -> mapToPositionDto(mp, accountId, businessDate))
-                    .toList();
-                
-                log.info("Retrieved {} positions from MSPM for account {} date {}", 
-                    positions.size(), accountId, businessDate);
-                
-                return positions;
-                
-            } catch (RestClientException e) {
-                log.error("MSPM API error for account {} date {}: {}", 
-                    accountId, businessDate, e.getMessage());
-                throw new MspmClientException("MSPM API call failed: " + e.getMessage(), e);
-            } catch (Exception e) {
-                log.error("Failed to fetch from MSPM for account {} date {}", 
-                    accountId, businessDate, e);
-                throw new MspmClientException("MSPM API call failed: " + e.getMessage(), e);
-            }
-        });
-    }
-    
-    /**
-     * Check account status in MSPM.
-     */
-    public AccountStatus getAccountStatus(int accountId) {
+    private List<PositionDto> fetchPositions(String url, int accountId, LocalDate businessDate) {
+        Timer.Sample sample = Timer.start(meterRegistry);
+
         try {
-            Supplier<AccountStatus> decoratedSupplier = CircuitBreaker.decorateSupplier(
-                circuitBreaker,
-                () -> restClient.get()
-                    .uri("/api/v1/accounts/{accountId}/status", accountId)
-                    .retrieve()
-                    .body(AccountStatus.class)
+            HttpHeaders headers = createHeaders();
+            HttpEntity<?> entity = new HttpEntity<>(headers);
+
+            log.debug("Fetching positions from MSPM: url={}", url);
+
+            ResponseEntity<String> response = restTemplate.exchange(
+                    url,
+                    HttpMethod.GET,
+                    entity,
+                    String.class,
+                    accountId,
+                    businessDate.format(DATE_FORMAT)
             );
-            return decoratedSupplier.get();
+
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                throw new MspmClientException("MSPM returned error: " + response.getStatusCode());
+            }
+
+            List<PositionDto> positions = objectMapper.readValue(
+                    response.getBody(),
+                    new TypeReference<List<PositionDto>>() {}
+            );
+
+            log.debug("Fetched {} positions for account {}", positions.size(), accountId);
+            meterRegistry.counter("mspm.positions.fetched", "account", String.valueOf(accountId))
+                    .increment(positions.size());
+
+            return positions;
+
+        } catch (RestClientException e) {
+            log.error("REST client error fetching positions: {}", e.getMessage());
+            throw new MspmClientException("Failed to fetch positions from MSPM", e);
         } catch (Exception e) {
-            log.warn("Failed to get account status for {}: {}", accountId, e.getMessage());
-            return new AccountStatus(accountId, "UNKNOWN", null);
+            log.error("Error processing MSPM response: {}", e.getMessage());
+            throw new MspmClientException("Failed to process MSPM response", e);
+        } finally {
+            sample.stop(Timer.builder("mspm.fetch.positions")
+                    .tag("accountId", String.valueOf(accountId))
+                    .register(meterRegistry));
         }
     }
-    
+
     /**
-     * Check if MSPM service is available (circuit breaker not open).
+     * Fetch MSPM positions for reconciliation.
      */
-    public boolean isAvailable() {
-        return !circuitBreaker.getState().equals(CircuitBreaker.State.OPEN);
+    private List<ReconciliationService.MspmPosition> fetchMspmPositions(String url, int accountId, LocalDate businessDate) {
+        List<PositionDto> dtos = fetchPositions(url, accountId, businessDate);
+
+        return dtos.stream()
+                .map(dto -> new ReconciliationService.MspmPosition(
+                        dto.securityId(),
+                        dto.quantity(),
+                        dto.marketValue(),
+                        dto.costBasis(),
+                        dto.currency()
+                ))
+                .toList();
     }
-    
+
     /**
-     * Get circuit breaker state for monitoring.
+     * Fetch account reference data.
      */
-    public String getCircuitBreakerState() {
-        return circuitBreaker.getState().name();
+    private AccountReferenceData fetchAccountReference(String url, int accountId) {
+        try {
+            HttpHeaders headers = createHeaders();
+            HttpEntity<?> entity = new HttpEntity<>(headers);
+
+            ResponseEntity<AccountReferenceData> response = restTemplate.exchange(
+                    url,
+                    HttpMethod.GET,
+                    entity,
+                    AccountReferenceData.class
+            );
+
+            return response.getBody();
+
+        } catch (Exception e) {
+            log.error("Failed to fetch account reference data: {}", e.getMessage());
+            throw new MspmClientException("Failed to fetch account reference data", e);
+        }
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RESILIENCE HANDLING
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Get circuit breaker metrics for monitoring.
+     * Execute operation with circuit breaker, retry, and rate limiting.
      */
-    public CircuitBreakerMetrics getCircuitBreakerMetrics() {
-        CircuitBreaker.Metrics metrics = circuitBreaker.getMetrics();
-        return new CircuitBreakerMetrics(
-            circuitBreaker.getState().name(),
-            metrics.getFailureRate(),
-            metrics.getSlowCallRate(),
-            metrics.getNumberOfSuccessfulCalls(),
-            metrics.getNumberOfFailedCalls(),
-            metrics.getNumberOfSlowCalls(),
-            metrics.getNumberOfNotPermittedCalls()
-        );
+    private <T> T executeWithResilience(Supplier<T> operation, String operationName, int accountId) {
+        // Compose resilience decorators
+        Supplier<T> decoratedSupplier = CircuitBreaker.decorateSupplier(circuitBreaker,
+                Retry.decorateSupplier(retry,
+                        RateLimiter.decorateSupplier(rateLimiter, operation)));
+
+        try {
+            return decoratedSupplier.get();
+        } catch (Exception e) {
+            log.error("MSPM operation {} failed for account {}: {}", operationName, accountId, e.getMessage());
+            meterRegistry.counter("mspm.operations.failed",
+                            "operation", operationName,
+                            "account", String.valueOf(accountId))
+                    .increment();
+
+            // Return empty list for position operations, throw for others
+            if (operationName.contains("Position")) {
+                log.warn("Returning empty list due to MSPM failure");
+                return (T) Collections.emptyList();
+            }
+            throw e;
+        }
     }
-    
+
     /**
-     * Map MSPM position to PositionDto.
+     * Register circuit breaker event handlers for alerting.
      */
-    private PositionDto mapToPositionDto(MspmPosition mp, int accountId, LocalDate businessDate) {
-        return new PositionDto(
-            null,
-            accountId,
-            mp.productId,
-            businessDate,
-            mp.quantity != null ? mp.quantity : BigDecimal.ZERO,
-            mp.price != null ? mp.price : BigDecimal.ZERO,
-            mp.currency != null ? mp.currency : "USD",
-            mp.marketValueLocal != null ? mp.marketValueLocal : BigDecimal.ZERO,
-            mp.marketValueBase != null ? mp.marketValueBase : BigDecimal.ZERO,
-            mp.avgCostPrice != null ? mp.avgCostPrice : BigDecimal.ZERO,
-            mp.costLocal != null ? mp.costLocal : BigDecimal.ZERO,
-            0,
-            "MSPM",
-            mp.positionType != null ? mp.positionType : "PHYSICAL",
-            false
-        );
+    private void registerCircuitBreakerEvents() {
+        circuitBreaker.getEventPublisher()
+                .onStateTransition(event -> {
+                    log.warn("MSPM circuit breaker state changed: {} -> {}",
+                            event.getStateTransition().getFromState(),
+                            event.getStateTransition().getToState());
+
+                    boolean isOpen = event.getStateTransition().getToState() == CircuitBreaker.State.OPEN;
+                    alertService.circuitBreakerStateChange("MSPM", isOpen);
+                })
+                .onError(event -> {
+                    log.error("MSPM circuit breaker error: {}", event.getThrowable().getMessage());
+                    meterRegistry.counter("mspm.circuit.errors").increment();
+                });
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // HELPER METHODS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * MSPM API response.
+     * Build MSPM URL with path and parameters.
      */
-    public static class MspmResponse {
-        public List<MspmPosition> positions;
-        public String status;
-        public String message;
+    private String buildUrl(String path, int accountId, LocalDate businessDate) {
+        return config.mspm().baseUrl() + path + "?businessDate=" + businessDate.format(DATE_FORMAT);
     }
-    
+
     /**
-     * MSPM position data.
+     * Create HTTP headers for MSPM requests.
      */
-    public static class MspmPosition {
-        public int productId;
-        public BigDecimal quantity;
-        public BigDecimal price;
-        public String currency;
-        public BigDecimal marketValueLocal;
-        public BigDecimal marketValueBase;
-        public BigDecimal avgCostPrice;
-        public BigDecimal costLocal;
-        public String positionType;
+    private HttpHeaders createHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Accept", "application/json");
+        headers.set("Content-Type", "application/json");
+        headers.set("X-Client-Id", "fxan-loader");
+        headers.set("X-Request-Id", java.util.UUID.randomUUID().toString());
+        return headers;
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DTOs AND EXCEPTIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Account status.
+     * Account reference data from MSPM.
      */
-    public record AccountStatus(
-        int accountId,
-        String status,
-        LocalDate lastUpdated
+    public record AccountReferenceData(
+            int accountId,
+            String accountName,
+            String baseCurrency,
+            String accountType,
+            boolean active,
+            String custodian
     ) {}
-    
+
     /**
-     * Circuit breaker metrics for monitoring.
+     * Exception for MSPM client errors.
      */
-    public record CircuitBreakerMetrics(
-        String state,
-        float failureRate,
-        float slowCallRate,
-        int successfulCalls,
-        int failedCalls,
-        int slowCalls,
-        long notPermittedCalls
-    ) {}
+    public static class MspmClientException extends RuntimeException {
+        public MspmClientException(String message) {
+            super(message);
+        }
+
+        public MspmClientException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
 }

@@ -1,5 +1,5 @@
 plugins {
-    java
+    `java-library`
     id("io.spring.dependency-management") version "1.1.4"
 }
 

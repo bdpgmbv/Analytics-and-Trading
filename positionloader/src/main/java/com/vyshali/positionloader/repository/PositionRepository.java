@@ -1,6 +1,6 @@
 package com.vyshali.positionloader.repository;
 
-import com.vyshali.positionloader.dto.PositionDto;
+import com.vyshali.common.dto.PositionDto;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;

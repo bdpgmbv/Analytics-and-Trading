@@ -4,7 +4,7 @@ import com.vyshali.common.dto.SharedDto.DlqMessageDTO;
 import com.vyshali.common.repository.AuditRepository;
 import com.vyshali.common.repository.DlqRepository;
 import com.vyshali.positionloader.dto.Dto;
-import com.vyshali.positionloader.dto.PositionDto;
+import com.vyshali.common.dto.PositionDto;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;

@@ -1,235 +1,337 @@
 package com.vyshali.positionloader.service;
 
-import com.vyshali.positionloader.config.AppConfig;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vyshali.common.dto.PositionDto;
+import com.vyshali.common.entity.Position;
+import com.vyshali.common.repository.AuditRepository;
+import com.vyshali.common.repository.PositionRepository;
+import com.vyshali.common.repository.ReferenceDataRepository;
+import com.vyshali.common.service.AlertService;
 import com.vyshali.positionloader.config.LoaderConfig;
-import com.vyshali.positionloader.dto.PositionDto;
-import com.vyshali.positionloader.repository.AuditRepository;
-import com.vyshali.positionloader.repository.BatchRepository;
-import com.vyshali.positionloader.repository.DataRepository;
-import com.vyshali.positionloader.repository.EodRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Service for EOD processing operations.
+ * Service for End-of-Day (EOD) position processing.
+ * Handles batch position loading from MSPM and persistence to FXAN database.
  */
+@Slf4j
 @Service
+@RequiredArgsConstructor
 public class EodProcessingService {
-    
-    private static final Logger log = LoggerFactory.getLogger(EodProcessingService.class);
-    
-    private final DataRepository dataRepository;
-    private final EodRepository eodRepository;
-    private final BatchRepository batchRepository;
+
+    private final PositionRepository positionRepository;
+    private final ReferenceDataRepository referenceDataRepository;
     private final AuditRepository auditRepository;
-    private final MspmClientService mspmClient;
-    private final PositionValidationService validationService;
+    private final MspmClientService mspmClientService;
     private final LoaderConfig config;
     private final AlertService alertService;
+    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
-    
-    public EodProcessingService(
-            DataRepository dataRepository,
-            EodRepository eodRepository,
-            BatchRepository batchRepository,
-            AuditRepository auditRepository,
-            MspmClientService mspmClient,
-            PositionValidationService validationService,
-            LoaderConfig config,
-            AlertService alertService,
-            MeterRegistry meterRegistry) {
-        this.dataRepository = dataRepository;
-        this.eodRepository = eodRepository;
-        this.batchRepository = batchRepository;
-        this.auditRepository = auditRepository;
-        this.mspmClient = mspmClient;
-        this.validationService = validationService;
-        this.config = config;
-        this.alertService = alertService;
-        this.meterRegistry = meterRegistry;
-    }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FULL EOD PROCESSING
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Process EOD for an account.
+     * Process full EOD for all active accounts.
+     * @param businessDate The business date to process
      */
     @Transactional
-    public EodResult processEod(int accountId, LocalDate businessDate) {
-        log.info("Starting EOD processing for account {} date {}", accountId, businessDate);
-        Timer.Sample timer = Timer.start(meterRegistry);
-        
+    public EodProcessingResult processFullEod(LocalDate businessDate) {
+        log.info("Starting full EOD processing for {}", businessDate);
+        Timer.Sample sample = Timer.start(meterRegistry);
+
+        EodProcessingResult result = new EodProcessingResult(businessDate);
+
         try {
-            // Check if already complete
-            if (eodRepository.isComplete(accountId, businessDate)) {
-                log.info("EOD already complete for account {} date {}", accountId, businessDate);
-                return EodResult.alreadyComplete(accountId, businessDate);
-            }
-            
-            // Check if account is disabled
-            if (config.features().isAccountDisabled(accountId)) {
-                log.warn("Account {} is disabled, skipping EOD", accountId);
-                return EodResult.skipped(accountId, businessDate, "Account disabled");
-            }
-            
-            // Check pilot mode
-            if (!config.features().shouldProcessAccount(accountId)) {
-                log.info("Account {} not in pilot mode, skipping", accountId);
-                return EodResult.skipped(accountId, businessDate, "Not in pilot mode");
-            }
-            
-            // Update status to processing
-            eodRepository.createOrUpdate(accountId, businessDate, AppConfig.EOD_STATUS_PROCESSING);
-            
-            // Fetch positions from MSPM
-            List<PositionDto> positions = mspmClient.fetchPositions(accountId, businessDate);
-            
-            if (positions.isEmpty()) {
-                log.warn("No positions returned from MSPM for account {} date {}", 
-                    accountId, businessDate);
-                eodRepository.updateStatus(accountId, businessDate, AppConfig.EOD_STATUS_NO_DATA);
-                return EodResult.noData(accountId, businessDate);
-            }
-            
-            // Validate positions
-            if (config.features().validationEnabled()) {
-                var validationResult = validationService.validate(positions);
-                if (!validationResult.isValid()) {
-                    log.error("Validation failed for account {} date {}: {}", 
-                        accountId, businessDate, validationResult.errors());
-                    eodRepository.markFailed(accountId, businessDate, 
-                        "Validation failed: " + validationResult.errors());
-                    return EodResult.validationFailed(accountId, businessDate, validationResult.errors());
+            // Get all active account IDs
+            List<Integer> activeAccounts = referenceDataRepository.getAllActiveAccountIds();
+            log.info("Processing EOD for {} active accounts", activeAccounts.size());
+
+            AtomicInteger successCount = new AtomicInteger(0);
+            AtomicInteger failCount = new AtomicInteger(0);
+
+            // Process in batches based on config
+            int batchSize = config.batch().size();
+            for (int i = 0; i < activeAccounts.size(); i += batchSize) {
+                int end = Math.min(i + batchSize, activeAccounts.size());
+                List<Integer> batch = activeAccounts.subList(i, end);
+
+                for (Integer accountId : batch) {
+                    try {
+                        processAccountEod(accountId, businessDate);
+                        successCount.incrementAndGet();
+                        result.addSuccessfulAccount(accountId);
+                    } catch (Exception e) {
+                        log.error("Failed to process EOD for account {}: {}", accountId, e.getMessage());
+                        failCount.incrementAndGet();
+                        result.addFailedAccount(accountId, e.getMessage());
+                        alertService.eodFailed(accountId, e.getMessage());
+                    }
                 }
             }
-            
-            // Check for duplicates
-            if (config.features().duplicateDetectionEnabled()) {
-                // Implementation would check for duplicate positions
-            }
-            
-            // Create batch and save positions
-            int batchId = batchRepository.createBatch(accountId, businessDate, AppConfig.SOURCE_EOD);
-            
-            try {
-                int saved = dataRepository.savePositions(positions, batchId);
-                batchRepository.completeBatch(batchId, saved);
-                
-                // Mark EOD complete
-                eodRepository.markCompleted(accountId, businessDate, saved);
-                
-                // Log audit
-                auditRepository.log("EOD_COMPLETE", accountId, businessDate,
-                    String.format("Processed %d positions", saved));
-                
-                timer.stop(meterRegistry.timer("eod.processing.time", "status", "success"));
-                meterRegistry.counter("eod.processing.success").increment();
-                
-                log.info("EOD complete for account {} date {}: {} positions", 
-                    accountId, businessDate, saved);
-                
-                return EodResult.success(accountId, businessDate, batchId, saved);
-                
-            } catch (Exception e) {
-                batchRepository.failBatch(batchId, e.getMessage());
-                throw e;
-            }
-            
+
+            result.setSuccess(failCount.get() == 0);
+
+            // Log summary
+            log.info("EOD processing complete: success={}, failed={}", successCount.get(), failCount.get());
+
+            // Record audit
+            recordAudit(businessDate, "FULL_EOD", successCount.get(), failCount.get());
+
         } catch (Exception e) {
-            log.error("EOD processing failed for account {} date {}", 
-                accountId, businessDate, e);
-            
-            eodRepository.markFailed(accountId, businessDate, e.getMessage());
-            alertService.eodFailed(accountId, e.getMessage());
-            
-            timer.stop(meterRegistry.timer("eod.processing.time", "status", "failed"));
-            meterRegistry.counter("eod.processing.failed").increment();
-            
-            return EodResult.failed(accountId, businessDate, e.getMessage());
+            log.error("Full EOD processing failed: {}", e.getMessage(), e);
+            result.setSuccess(false);
+            result.setErrorMessage(e.getMessage());
+            alertService.eodFailed(businessDate, e.getMessage());
+        } finally {
+            sample.stop(Timer.builder("eod.processing.full")
+                    .tag("businessDate", businessDate.toString())
+                    .register(meterRegistry));
         }
+
+        return result;
     }
-    
+
     /**
-     * Reprocess EOD (force even if already complete).
+     * Process EOD for a specific account.
+     * @param accountId Account to process
+     * @param businessDate Business date
      */
     @Transactional
-    public EodResult reprocessEod(int accountId, LocalDate businessDate) {
-        log.warn("Reprocessing EOD for account {} date {}", accountId, businessDate);
-        
-        // Reset status first
-        eodRepository.resetStatus(accountId, businessDate);
-        
-        // Delete existing positions
-        dataRepository.deletePositions(accountId, businessDate);
-        
-        // Process again
-        return processEod(accountId, businessDate);
+    public void processAccountEod(int accountId, LocalDate businessDate) {
+        log.debug("Processing EOD for account {} on {}", accountId, businessDate);
+        Timer.Sample sample = Timer.start(meterRegistry);
+
+        try {
+            // Check pilot mode
+            if (!config.features().shouldProcessAccount(accountId)) {
+                log.debug("Skipping account {} - not in pilot mode", accountId);
+                return;
+            }
+
+            // Delete existing positions for this account/date
+            int deleted = deleteExistingPositions(accountId, businessDate);
+            log.debug("Deleted {} existing positions for account {}", deleted, accountId);
+
+            // Fetch positions from MSPM
+            List<PositionDto> mspmPositions = mspmClientService.getEodPositions(accountId, businessDate);
+            log.debug("Fetched {} positions from MSPM for account {}", mspmPositions.size(), accountId);
+
+            // Save to database
+            List<Position> savedPositions = savePositions(mspmPositions, accountId, businessDate);
+
+            // Publish change events
+            publishPositionChanges(savedPositions, "EOD_LOAD");
+
+            meterRegistry.counter("eod.accounts.processed", "status", "success").increment();
+            meterRegistry.counter("eod.positions.loaded").increment(savedPositions.size());
+
+        } catch (Exception e) {
+            log.error("EOD processing failed for account {}: {}", accountId, e.getMessage(), e);
+            meterRegistry.counter("eod.accounts.processed", "status", "failed").increment();
+            throw e;
+        } finally {
+            sample.stop(Timer.builder("eod.processing.account")
+                    .tag("accountId", String.valueOf(accountId))
+                    .register(meterRegistry));
+        }
     }
-    
+
     /**
-     * Check if EOD is complete.
+     * Async EOD processing for parallel execution.
      */
-    public boolean isEodComplete(int accountId, LocalDate businessDate) {
-        return eodRepository.isComplete(accountId, businessDate);
+    @Async
+    public CompletableFuture<Void> processAccountEodAsync(int accountId, LocalDate businessDate) {
+        processAccountEod(accountId, businessDate);
+        return CompletableFuture.completedFuture(null);
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BATCH PROCESSING
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Get EOD status.
+     * Process an EOD batch message from Kafka.
      */
-    public String getEodStatus(int accountId, LocalDate businessDate) {
-        return eodRepository.getStatus(accountId, businessDate);
+    @Transactional
+    public void processEodBatch(PositionDto.EodBatch batch) {
+        log.info("Processing EOD batch: accountId={}, positions={}, businessDate={}",
+                batch.accountId(), batch.positions().size(), batch.businessDate());
+
+        int accountId = batch.accountId();
+        LocalDate businessDate = batch.businessDate();
+
+        try {
+            // Delete existing positions
+            deleteExistingPositions(accountId, businessDate);
+
+            // Save new positions
+            List<Position> saved = savePositions(batch.positions(), accountId, businessDate);
+
+            // Publish changes
+            publishPositionChanges(saved, "EOD_BATCH");
+
+            meterRegistry.counter("eod.batch.processed", "status", "success").increment();
+
+        } catch (Exception e) {
+            log.error("EOD batch processing failed: accountId={}, error={}", accountId, e.getMessage(), e);
+            alertService.eodFailed(accountId, e.getMessage());
+            meterRegistry.counter("eod.batch.processed", "status", "failed").increment();
+            throw e;
+        }
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // HELPER METHODS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * EOD processing result.
+     * Delete existing positions for account/date.
      */
-    public record EodResult(
-        int accountId,
-        LocalDate businessDate,
-        Status status,
-        int batchId,
-        int positionCount,
-        String message,
-        List<String> errors
-    ) {
-        public enum Status {
-            SUCCESS, ALREADY_COMPLETE, NO_DATA, SKIPPED, VALIDATION_FAILED, FAILED
+    private int deleteExistingPositions(int accountId, LocalDate businessDate) {
+        List<Position> existing = positionRepository.findByAccountIdAndBusinessDate(accountId, businessDate);
+        positionRepository.deleteAll(existing);
+        return existing.size();
+    }
+
+    /**
+     * Save positions to database.
+     */
+    private List<Position> savePositions(List<PositionDto> dtos, int accountId, LocalDate businessDate) {
+        List<Position> positions = new ArrayList<>();
+
+        for (PositionDto dto : dtos) {
+            Position position = new Position();
+            position.setAccountId(accountId);
+            position.setSecurityId(dto.securityId());
+            position.setBusinessDate(businessDate);
+            position.setQuantity(dto.quantity());
+            position.setMarketValue(dto.marketValue());
+            position.setCostBasis(dto.costBasis());
+            position.setCurrency(dto.currency());
+            position.setCreatedAt(LocalDateTime.now());
+            position.setLastUpdated(LocalDateTime.now());
+
+            positions.add(position);
         }
-        
-        public static EodResult success(int accountId, LocalDate date, int batchId, int count) {
-            return new EodResult(accountId, date, Status.SUCCESS, batchId, count, null, List.of());
+
+        return positionRepository.saveAll(positions);
+    }
+
+    /**
+     * Publish position change events to Kafka.
+     */
+    private void publishPositionChanges(List<Position> positions, String changeType) {
+        for (Position position : positions) {
+            try {
+                PositionDto.PositionChangeEvent event = new PositionDto.PositionChangeEvent(
+                        position.getAccountId(),
+                        position.getSecurityId(),
+                        position.getBusinessDate(),
+                        changeType,
+                        position.getQuantity(),
+                        position.getMarketValue(),
+                        LocalDateTime.now()
+                );
+
+                String json = objectMapper.writeValueAsString(event);
+                String key = position.getAccountId() + "-" + position.getSecurityId();
+
+                kafkaTemplate.send(config.kafka().positionChanges(), key, json);
+
+            } catch (Exception e) {
+                log.error("Failed to publish position change event: {}", e.getMessage());
+            }
         }
-        
-        public static EodResult alreadyComplete(int accountId, LocalDate date) {
-            return new EodResult(accountId, date, Status.ALREADY_COMPLETE, -1, 0, 
-                "Already completed", List.of());
+    }
+
+    /**
+     * Record audit entry for EOD processing.
+     */
+    private void recordAudit(LocalDate businessDate, String operation, int successCount, int failCount) {
+        try {
+            auditRepository.recordEodAudit(
+                    businessDate,
+                    operation,
+                    successCount,
+                    failCount,
+                    LocalDateTime.now()
+            );
+        } catch (Exception e) {
+            log.error("Failed to record audit: {}", e.getMessage());
         }
-        
-        public static EodResult noData(int accountId, LocalDate date) {
-            return new EodResult(accountId, date, Status.NO_DATA, -1, 0, 
-                "No data from MSPM", List.of());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RESULT DTO
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Result of EOD processing run.
+     */
+    public static class EodProcessingResult {
+        private final LocalDate businessDate;
+        private final List<Integer> successfulAccounts = new ArrayList<>();
+        private final List<AccountFailure> failedAccounts = new ArrayList<>();
+        private boolean success;
+        private String errorMessage;
+
+        public EodProcessingResult(LocalDate businessDate) {
+            this.businessDate = businessDate;
         }
-        
-        public static EodResult skipped(int accountId, LocalDate date, String reason) {
-            return new EodResult(accountId, date, Status.SKIPPED, -1, 0, reason, List.of());
+
+        public void addSuccessfulAccount(int accountId) {
+            successfulAccounts.add(accountId);
         }
-        
-        public static EodResult validationFailed(int accountId, LocalDate date, List<String> errors) {
-            return new EodResult(accountId, date, Status.VALIDATION_FAILED, -1, 0, 
-                "Validation failed", errors);
+
+        public void addFailedAccount(int accountId, String error) {
+            failedAccounts.add(new AccountFailure(accountId, error));
         }
-        
-        public static EodResult failed(int accountId, LocalDate date, String error) {
-            return new EodResult(accountId, date, Status.FAILED, -1, 0, error, List.of(error));
+
+        public LocalDate getBusinessDate() {
+            return businessDate;
         }
-        
+
+        public List<Integer> getSuccessfulAccounts() {
+            return successfulAccounts;
+        }
+
+        public List<AccountFailure> getFailedAccounts() {
+            return failedAccounts;
+        }
+
         public boolean isSuccess() {
-            return status == Status.SUCCESS;
+            return success;
         }
+
+        public void setSuccess(boolean success) {
+            this.success = success;
+        }
+
+        public String getErrorMessage() {
+            return errorMessage;
+        }
+
+        public void setErrorMessage(String errorMessage) {
+            this.errorMessage = errorMessage;
+        }
+
+        public record AccountFailure(int accountId, String error) {}
     }
 }

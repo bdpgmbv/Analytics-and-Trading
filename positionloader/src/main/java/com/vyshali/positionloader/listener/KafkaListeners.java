@@ -1,16 +1,18 @@
 package com.vyshali.positionloader.listener;
 
-import com.vyshali.common.service.AlertService;  // ✅ FROM COMMON MODULE
-import com.vyshali.common.util.JsonUtils;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vyshali.common.dto.PositionDto;
+import com.vyshali.common.service.AlertService;
 import com.vyshali.positionloader.config.LoaderConfig;
-import com.vyshali.positionloader.dto.PositionDto.PositionUpdate;
-import com.vyshali.positionloader.repository.DataRepository;
+import com.vyshali.positionloader.service.EodService;
 import com.vyshali.positionloader.service.PositionService;
-import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 
@@ -18,101 +20,111 @@ import java.time.LocalDate;
 
 /**
  * Kafka message listeners for position updates and EOD triggers.
- * 
- * ✅ Uses common module's AlertService for notifications
+ * Handles message processing, error handling, and DLQ routing.
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class KafkaListeners {
 
     private final PositionService positionService;
-    private final DataRepository dataRepository;
-    private final AlertService alertService;  // ✅ FROM COMMON MODULE
+    private final EodService eodService;
+    private final ObjectMapper objectMapper;
     private final LoaderConfig config;
-    
-    // Metrics
-    private final Counter messagesReceived;
-    private final Counter messagesProcessed;
-    private final Counter messagesFailed;
-    private final Counter messagesDlq;
-
-    public KafkaListeners(
-            PositionService positionService,
-            DataRepository dataRepository,
-            AlertService alertService,  // ✅ FROM COMMON MODULE
-            LoaderConfig config,
-            MeterRegistry meterRegistry) {
-        this.positionService = positionService;
-        this.dataRepository = dataRepository;
-        this.alertService = alertService;
-        this.config = config;
-        
-        // Initialize metrics
-        this.messagesReceived = meterRegistry.counter("kafka.messages.received", "listener", "position");
-        this.messagesProcessed = meterRegistry.counter("kafka.messages.processed", "listener", "position");
-        this.messagesFailed = meterRegistry.counter("kafka.messages.failed", "listener", "position");
-        this.messagesDlq = meterRegistry.counter("kafka.messages.dlq", "listener", "position");
-    }
+    private final AlertService alertService;
+    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final MeterRegistry meterRegistry;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INTRADAY POSITION UPDATES
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Listen for intraday position updates from MSPA.
+     */
     @KafkaListener(
-        topics = "${app.kafka.topics.position-updates:position-updates}",
-        groupId = "${app.kafka.consumer-group:position-loader-group}",
-        containerFactory = "kafkaListenerContainerFactory"
+            topics = "${loader.kafka.intraday-positions:fxan.positions.intraday}",
+            groupId = "${spring.kafka.consumer.group-id:fxan-loader}",
+            containerFactory = "kafkaListenerContainerFactory"
     )
-    public void onPositionUpdate(ConsumerRecord<String, String> record, Acknowledgment ack) {
-        messagesReceived.increment();
+    public void onIntradayPosition(ConsumerRecord<String, String> record, Acknowledgment ack) {
         String key = record.key();
-        String payload = record.value();
-        
-        log.debug("Received position update: key={}, partition={}, offset={}", 
-            key, record.partition(), record.offset());
+        String value = record.value();
+
+        log.debug("Received intraday position update: key={}, partition={}, offset={}",
+                key, record.partition(), record.offset());
+
+        meterRegistry.counter("kafka.messages.received", "topic", "intraday").increment();
 
         try {
-            // Check if intraday processing is enabled
-            if (!config.features().intradayProcessingEnabled()) {
-                log.debug("Intraday processing disabled, skipping message");
-                ack.acknowledge();
-                return;
-            }
+            // Parse and process the update
+            PositionDto.PositionUpdate update = objectMapper.readValue(value, PositionDto.PositionUpdate.class);
 
-            // Parse the update
-            PositionUpdate update = JsonUtils.fromJson(payload, PositionUpdate.class);
-            if (update == null) {
-                log.warn("Failed to parse position update: {}", payload);
-                sendToDlq(record.topic(), key, payload, "Parse error: null result");
-                ack.acknowledge();
-                return;
-            }
-
-            // Check if account is disabled
-            if (config.features().disabledAccounts().contains(update.accountId())) {
-                log.debug("Account {} is disabled, skipping update", update.accountId());
+            // Check pilot mode
+            if (!config.features().shouldProcessAccount(update.accountId())) {
+                log.debug("Skipping account {} - not in pilot mode", update.accountId());
                 ack.acknowledge();
                 return;
             }
 
             // Process the update
             positionService.processIntradayUpdate(update);
-            messagesProcessed.increment();
+
+            meterRegistry.counter("kafka.messages.processed", "topic", "intraday", "status", "success").increment();
             ack.acknowledge();
-            
+
+        } catch (JsonProcessingException e) {
+            log.error("Failed to parse intraday position message: key={}, error={}", key, e.getMessage());
+            handleProcessingError(record, e, "intraday-parse-error");
+            ack.acknowledge(); // Ack to avoid infinite retry, message goes to DLQ
+
         } catch (Exception e) {
-            messagesFailed.increment();
-            log.error("Failed to process position update: key={}, error={}", key, e.getMessage(), e);
-            
-            // Send to DLQ
-            sendToDlq(record.topic(), key, payload, e.getMessage());
-            
-            // Alert on repeated failures
-            alertService.warn("Position update processing failed", 
-                "Key: " + key + ", Error: " + e.getMessage());
-            
-            // Still acknowledge to avoid infinite retry loop
+            log.error("Failed to process intraday position update: key={}, error={}", key, e.getMessage(), e);
+            handleProcessingError(record, e, "intraday-processing-error");
+            // Don't ack - let it retry
+            throw e;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EOD POSITION UPDATES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Listen for EOD position batch messages.
+     */
+    @KafkaListener(
+            topics = "${loader.kafka.eod-positions:fxan.positions.eod}",
+            groupId = "${spring.kafka.consumer.group-id:fxan-loader}",
+            containerFactory = "batchKafkaListenerContainerFactory"
+    )
+    public void onEodPositions(ConsumerRecord<String, String> record, Acknowledgment ack) {
+        String key = record.key();
+
+        log.info("Received EOD position batch: key={}", key);
+        meterRegistry.counter("kafka.messages.received", "topic", "eod").increment();
+
+        try {
+            PositionDto.EodBatch batch = objectMapper.readValue(record.value(), PositionDto.EodBatch.class);
+
+            log.info("Processing EOD batch: accountId={}, positionCount={}, businessDate={}",
+                    batch.accountId(), batch.positions().size(), batch.businessDate());
+
+            // Process the batch
+            eodService.processEodBatch(batch);
+
+            meterRegistry.counter("kafka.messages.processed", "topic", "eod", "status", "success").increment();
             ack.acknowledge();
+
+        } catch (JsonProcessingException e) {
+            log.error("Failed to parse EOD batch: key={}, error={}", key, e.getMessage());
+            handleProcessingError(record, e, "eod-parse-error");
+            ack.acknowledge();
+
+        } catch (Exception e) {
+            log.error("Failed to process EOD batch: key={}, error={}", key, e.getMessage(), e);
+            handleProcessingError(record, e, "eod-processing-error");
+            throw e;
         }
     }
 
@@ -120,185 +132,152 @@ public class KafkaListeners {
     // EOD TRIGGER
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Listen for EOD processing trigger messages.
+     * Triggers full position reload for specified accounts.
+     */
     @KafkaListener(
-        topics = "${app.kafka.topics.eod-trigger:eod-trigger}",
-        groupId = "${app.kafka.consumer-group:position-loader-group}",
-        containerFactory = "kafkaListenerContainerFactory"
+            topics = "${loader.kafka.eod-trigger:fxan.eod.trigger}",
+            groupId = "${spring.kafka.consumer.group-id:fxan-loader}-trigger",
+            containerFactory = "kafkaListenerContainerFactory"
     )
     public void onEodTrigger(ConsumerRecord<String, String> record, Acknowledgment ack) {
-        String key = record.key();  // Usually accountId
-        String payload = record.value();
-        
+        String key = record.key();
+
         log.info("Received EOD trigger: key={}", key);
+        meterRegistry.counter("kafka.messages.received", "topic", "eod-trigger").increment();
 
         try {
-            // Check if EOD processing is enabled
-            if (!config.features().eodProcessingEnabled()) {
-                log.warn("EOD processing disabled globally, skipping trigger");
-                ack.acknowledge();
-                return;
-            }
+            PositionDto.EodTrigger trigger = objectMapper.readValue(record.value(), PositionDto.EodTrigger.class);
 
-            // Parse account ID from key or payload
-            int accountId = parseAccountId(key, payload);
-            
-            // Check if account is disabled
-            if (config.features().disabledAccounts().contains(accountId)) {
-                log.warn("Account {} is disabled, skipping EOD", accountId);
-                ack.acknowledge();
-                return;
-            }
+            log.info("Processing EOD trigger: businessDate={}, accountCount={}",
+                    trigger.businessDate(),
+                    trigger.accountIds() != null ? trigger.accountIds().size() : "ALL");
 
             // Trigger EOD processing
-            positionService.processEod(accountId);
-            
-            log.info("EOD processing completed for account {}", accountId);
+            if (trigger.accountIds() != null && !trigger.accountIds().isEmpty()) {
+                // Process specific accounts
+                for (Integer accountId : trigger.accountIds()) {
+                    eodService.processEodForAccount(accountId, trigger.businessDate());
+                }
+            } else {
+                // Process all active accounts
+                eodService.processFullEod(trigger.businessDate());
+            }
+
+            alertService.info(AlertService.ALERT_EOD_DELAYED, // Using existing alert type
+                    "EOD trigger processed successfully",
+                    "businessDate=" + trigger.businessDate());
+
+            meterRegistry.counter("kafka.messages.processed", "topic", "eod-trigger", "status", "success").increment();
             ack.acknowledge();
-            
+
+        } catch (JsonProcessingException e) {
+            log.error("Failed to parse EOD trigger: key={}, error={}", key, e.getMessage());
+            alertService.critical(AlertService.ALERT_EOD_FAILED,
+                    "EOD trigger processing failed - parse error: " + e.getMessage(),
+                    "key=" + key);
+            handleProcessingError(record, e, "trigger-parse-error");
+            ack.acknowledge();
+
         } catch (Exception e) {
             log.error("Failed to process EOD trigger: key={}, error={}", key, e.getMessage(), e);
-            
-            // Send to DLQ
-            sendToDlq(record.topic(), key, payload, e.getMessage());
-            
-            // Alert - EOD failures are critical
-            alertService.critical("EOD trigger processing failed", 
-                "Account: " + key + ", Error: " + e.getMessage());
-            
-            ack.acknowledge();
+            alertService.critical(AlertService.ALERT_EOD_FAILED,
+                    "EOD trigger processing failed: " + e.getMessage(),
+                    "key=" + key);
+            handleProcessingError(record, e, "trigger-processing-error");
+            throw e;
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // BATCH EOD (process multiple accounts)
+    // REPROCESSING FROM DLQ
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Listen to DLQ for manual reprocessing triggers.
+     */
     @KafkaListener(
-        topics = "${app.kafka.topics.batch-eod:batch-eod-trigger}",
-        groupId = "${app.kafka.consumer-group:position-loader-group}",
-        containerFactory = "kafkaListenerContainerFactory"
+            topics = "${loader.kafka.dlq:fxan.positions.dlq}.reprocess",
+            groupId = "${spring.kafka.consumer.group-id:fxan-loader}-dlq",
+            containerFactory = "kafkaListenerContainerFactory"
     )
-    public void onBatchEodTrigger(ConsumerRecord<String, String> record, Acknowledgment ack) {
-        String payload = record.value();
-        
-        log.info("Received batch EOD trigger");
+    public void onDlqReprocess(ConsumerRecord<String, String> record, Acknowledgment ack) {
+        log.info("Reprocessing DLQ message: key={}", record.key());
 
         try {
-            if (!config.features().eodProcessingEnabled()) {
-                log.warn("EOD processing disabled globally");
-                ack.acknowledge();
-                return;
+            // Parse the DLQ wrapper to get original message
+            PositionDto.DlqMessage dlqMessage = objectMapper.readValue(record.value(), PositionDto.DlqMessage.class);
+
+            // Route to appropriate handler based on original topic
+            switch (dlqMessage.originalTopic()) {
+                case String s when s.contains("intraday") -> {
+                    PositionDto.PositionUpdate update = objectMapper.readValue(
+                            dlqMessage.originalPayload(), PositionDto.PositionUpdate.class);
+                    positionService.processIntradayUpdate(update);
+                }
+                case String s when s.contains("eod") && !s.contains("trigger") -> {
+                    PositionDto.EodBatch batch = objectMapper.readValue(
+                            dlqMessage.originalPayload(), PositionDto.EodBatch.class);
+                    eodService.processEodBatch(batch);
+                }
+                case String s when s.contains("trigger") -> {
+                    PositionDto.EodTrigger trigger = objectMapper.readValue(
+                            dlqMessage.originalPayload(), PositionDto.EodTrigger.class);
+                    eodService.processFullEod(trigger.businessDate());
+                }
+                default -> log.warn("Unknown original topic in DLQ message: {}", dlqMessage.originalTopic());
             }
 
-            // Parse business date from payload or use today
-            LocalDate businessDate = parseBusinessDate(payload);
-            
-            // Trigger batch EOD
-            positionService.processBatchEod(businessDate);
-            
-            log.info("Batch EOD processing completed for {}", businessDate);
+            alertService.info("dlq-reprocess",
+                    "Successfully reprocessed DLQ message",
+                    "originalTopic=" + dlqMessage.originalTopic());
+
             ack.acknowledge();
-            
+
         } catch (Exception e) {
-            log.error("Failed to process batch EOD trigger: error={}", e.getMessage(), e);
-            sendToDlq(record.topic(), "batch", payload, e.getMessage());
-            alertService.critical("Batch EOD trigger failed", e.getMessage());
-            ack.acknowledge();
+            log.error("Failed to reprocess DLQ message: {}", e.getMessage(), e);
+            alertService.critical("dlq-reprocess-failed",
+                    "DLQ reprocessing failed: " + e.getMessage(),
+                    "key=" + record.key());
+            ack.acknowledge(); // Don't retry forever
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // REPROCESS COMMAND (for ops/support)
+    // ERROR HANDLING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @KafkaListener(
-        topics = "${app.kafka.topics.reprocess:position-reprocess}",
-        groupId = "${app.kafka.consumer-group:position-loader-group}",
-        containerFactory = "kafkaListenerContainerFactory"
-    )
-    public void onReprocessCommand(ConsumerRecord<String, String> record, Acknowledgment ack) {
-        String key = record.key();
-        String payload = record.value();
-        
-        log.warn("Received reprocess command: key={}", key);
-
+    /**
+     * Handle processing errors by sending to DLQ.
+     */
+    private void handleProcessingError(ConsumerRecord<String, String> record, Exception e, String errorType) {
         try {
-            int accountId = parseAccountId(key, payload);
-            LocalDate businessDate = parseBusinessDate(payload);
-            
-            // Reprocess = reset status + re-run EOD
-            positionService.reprocessEod(accountId, businessDate);
-            
-            log.info("Reprocessing completed for account {} date {}", accountId, businessDate);
-            alertService.info("Reprocess completed", 
-                "Account: " + accountId + ", Date: " + businessDate);
-            
-            ack.acknowledge();
-            
-        } catch (Exception e) {
-            log.error("Failed to reprocess: key={}, error={}", key, e.getMessage(), e);
-            sendToDlq(record.topic(), key, payload, e.getMessage());
-            alertService.warn("Reprocess failed", "Key: " + key + ", Error: " + e.getMessage());
-            ack.acknowledge();
-        }
-    }
+            PositionDto.DlqMessage dlqMessage = new PositionDto.DlqMessage(
+                    record.topic(),
+                    record.key(),
+                    record.value(),
+                    e.getMessage(),
+                    errorType,
+                    LocalDate.now(),
+                    System.currentTimeMillis()
+            );
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // HELPER METHODS
-    // ═══════════════════════════════════════════════════════════════════════════
+            String dlqPayload = objectMapper.writeValueAsString(dlqMessage);
+            kafkaTemplate.send(config.kafka().dlq(), record.key(), dlqPayload);
 
-    private void sendToDlq(String topic, String key, String payload, String error) {
-        try {
-            messagesDlq.increment();
-            dataRepository.saveToDlq(topic, key, payload, error);
-            log.debug("Message sent to DLQ: topic={}, key={}", topic, key);
-        } catch (Exception e) {
-            log.error("Failed to send to DLQ: {}", e.getMessage());
-        }
-    }
+            log.warn("Sent message to DLQ: topic={}, key={}, errorType={}",
+                    record.topic(), record.key(), errorType);
 
-    private int parseAccountId(String key, String payload) {
-        // Try key first
-        if (key != null && !key.isBlank()) {
-            try {
-                return Integer.parseInt(key.trim());
-            } catch (NumberFormatException e) {
-                // Try extracting from payload
-            }
-        }
-        
-        // Try payload JSON
-        if (payload != null && !payload.isBlank()) {
-            try {
-                var node = JsonUtils.parseTree(payload).orElse(null);
-                if (node != null && node.has("accountId")) {
-                    return node.get("accountId").asInt();
-                }
-                if (node != null && node.has("account_id")) {
-                    return node.get("account_id").asInt();
-                }
-            } catch (Exception e) {
-                // Fall through
-            }
-        }
-        
-        throw new IllegalArgumentException("Cannot parse accountId from key or payload");
-    }
+            meterRegistry.counter("kafka.dlq.sent", "errorType", errorType).increment();
 
-    private LocalDate parseBusinessDate(String payload) {
-        if (payload != null && !payload.isBlank()) {
-            try {
-                var node = JsonUtils.parseTree(payload).orElse(null);
-                if (node != null && node.has("businessDate")) {
-                    return LocalDate.parse(node.get("businessDate").asText());
-                }
-                if (node != null && node.has("business_date")) {
-                    return LocalDate.parse(node.get("business_date").asText());
-                }
-            } catch (Exception e) {
-                // Fall through
-            }
+            // Alert if DLQ is growing
+            alertService.warn("dlq-message-added",
+                    "Message sent to DLQ: " + errorType,
+                    "topic=" + record.topic() + ", key=" + record.key());
+
+        } catch (JsonProcessingException ex) {
+            log.error("Failed to send message to DLQ: {}", ex.getMessage());
         }
-        return LocalDate.now();
     }
 }
