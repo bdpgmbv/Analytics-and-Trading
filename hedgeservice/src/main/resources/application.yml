@@ -1,0 +1,134 @@
+server:
+  port: 8084
+  servlet:
+    context-path: /
+  compression:
+    enabled: true
+
+spring:
+  application:
+    name: hedge-service
+  
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/fxanalyzer}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      pool-name: HedgeServicePool
+  
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          batch_size: 20
+        order_inserts: true
+        order_updates: true
+    open-in-view: false
+  
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
+    consumer:
+      group-id: hedge-service
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+    listener:
+      ack-mode: manual
+  
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    timeout: 2000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 2
+  
+  cache:
+    type: redis
+    redis:
+      time-to-live: 300000 # 5 minutes default
+
+# WebSocket Configuration
+websocket:
+  allowed-origins: "*"
+  heartbeat-interval: 30000
+
+# Business Configuration
+fx-analyzer:
+  position-loader:
+    base-url: ${POSITION_LOADER_URL:http://localhost:8081}
+  price-service:
+    base-url: ${PRICE_SERVICE_URL:http://localhost:8082}
+  trade-fill-processor:
+    base-url: ${TRADE_FILL_PROCESSOR_URL:http://localhost:8083}
+  
+  cache:
+    positions-ttl: 60000 # 1 minute
+    prices-ttl: 30000 # 30 seconds
+    exposures-ttl: 30000 # 30 seconds
+  
+  alerts:
+    forward-maturity-days: 7 # Alert if forward matures within 7 days
+
+# Resilience4j Circuit Breaker
+resilience4j:
+  circuitbreaker:
+    instances:
+      positionLoader:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+      priceService:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+
+# Actuator endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+
+# Logging
+logging:
+  level:
+    com.fxanalyzer: INFO
+    org.springframework.web: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+# OpenAPI/Swagger
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true

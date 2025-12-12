@@ -1,17 +1,18 @@
 package com.vyshali.hedgeservice;
 
-/*
- * 12/03/2025 - 12:14 PM
- * @author Vyshali Prabananth Lal
- */
-
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.cache.annotation.EnableCaching; // <--- NEW
+import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
-@EnableCaching // <--- NEW
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = {
+    "com.fxanalyzer.hedgeservice",
+    "com.fxanalyzer.common"
+})
+@EnableCaching
+@EnableScheduling
 public class HedgeServiceApplication {
+
     public static void main(String[] args) {
         SpringApplication.run(HedgeServiceApplication.class, args);
     }
